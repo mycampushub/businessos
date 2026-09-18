@@ -1,0 +1,81 @@
+/**
+ * OrgOS — Cloudflare Workers deployment configuration
+ * ---------------------------------------------------
+ * Production target: Cloudflare Workers + D1 (SQLite) + R2 (documents) + KV (sessions/cache).
+ *
+ * This file configures the OpenNext (Next.js on Workers) deployment of the same
+ * application that runs in this sandbox on Node + SQLite — the Prisma schema is
+ * 100% SQLite/D1-compatible (see cloudflare/migrations/0001_init.sql).
+ *
+ * Deploy path (see cloudflare/README.md):
+ *   npm i -D @opennextjs/cloudflare wrangler && npm i @prisma/adapter-d1
+ *   npx opennextjs-cloudflare build
+ *   npx wrangler deploy --config cloudflare/wrangler.jsonc
+ *
+ * Replace the placeholder ids below after `wrangler d1 create`, `wrangler r2 bucket create`
+ * and `wrangler kv namespace create` (exact commands in README).
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "orgos",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // OpenNext serves the built Next.js assets through this binding
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  // ---- D1: the relational database (same schema as prisma/schema.prisma) ----
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "orgos",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "cloudflare/migrations",
+      "migrations_table": "__cf_d1_migrations"
+    }
+  ],
+
+  // ---- R2: object storage for Documents / attachments (Document.storageKey) ----
+  "r2_buckets": [
+    {
+      "binding": "STORAGE",
+      "bucket_name": "orgos-documents",
+      "jurisdiction": "default"
+    }
+  ],
+
+  // ---- KV: hot caches + session/token lookups ----
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "REPLACE_WITH_SESSIONS_KV_NAMESPACE_ID"
+    },
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_CACHE_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // ---- Environment ----
+  "vars": {
+    "APP_ENV": "production",
+    "DEFAULT_CURRENCY": "BDT",
+    "DEFAULT_TIMEZONE": "Asia/Dhaka"
+  },
+
+  // Secrets (never commit — set with `wrangler secret put`):
+  //   wrangler secret put APP_SECRET   // session signing pepper
+  "observability": {
+    "enabled": true
+  },
+
+  // Optional: scheduled jobs (invoice overdue sweep, leave reminders)
+  // Uncomment after implementing the scheduled handler in the worker entry.
+  // "triggers": {
+  //   "crons": ["0 1 * * *"] // 01:00 UTC daily
+  // }
+}
