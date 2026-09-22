@@ -72,9 +72,9 @@ export interface TaskItem {
   subtasks?: Array<{ id: string; title: string; status: string; assigneeName: string | null }>
   subtaskCount: number
   _count: { dependencies: number; comments: number }
-  /** T3-d: dependency id+title lists (present on every task item) */
-  dependsOn?: Array<{ id: string; title: string }>
-  dependents?: Array<{ id: string; title: string }>
+  /** T3-d: dependency id+title(+status) lists (present on every task item) */
+  dependsOn?: Array<{ id: string; title: string; status?: string; type?: string }>
+  dependents?: Array<{ id: string; title: string; status?: string; type?: string }>
 }
 
 export interface EmployeeItem {
@@ -136,8 +136,36 @@ export function taskStatusTone(status: string, columns?: TaskColumnOption[]): Ba
   return TASK_STATUS_TONE[status] ?? 'outline'
 }
 
+/** whether a status counts as done — dynamic column flag wins, legacy DONE fallback */
+export function isDoneColumn(status: string, columns?: TaskColumnOption[]): boolean {
+  const col = columns?.find((c) => c.key === status)
+  return col ? !!col.isDone : status === 'DONE'
+}
+
 function toDateInput(d: string | null | undefined): string {
   return d ? d.slice(0, 10) : ''
+}
+
+// ---------- dependency link types ----------
+
+export const DEP_TYPES = ['FS', 'SS', 'FF', 'SF'] as const
+export const DEP_TYPE_LABELS: Record<string, string> = {
+  FS: 'finish-to-start',
+  SS: 'start-to-start',
+  FF: 'finish-to-finish',
+  SF: 'start-to-finish',
+}
+
+/** small mono badge showing a dependency link type (title = full label) */
+function DepTypeBadge({ type }: { type: string }) {
+  return (
+    <span
+      className="shrink-0 rounded bg-muted px-1 font-mono text-[9px] font-semibold uppercase text-muted-foreground"
+      title={`${type} — ${DEP_TYPE_LABELS[type] ?? type}`}
+    >
+      {type}
+    </span>
+  )
 }
 
 // ---------- compact kanban card (shared by all boards) ----------
@@ -206,9 +234,11 @@ export function TaskKanbanCard({ task, dimmed }: { task: TaskItem; dimmed?: bool
  * Picks `dependsOn` tasks: combobox listing candidate tasks (project tasks when a
  * projectId is chosen, else all org tasks, limit 200), selected tasks as removable
  * chips with a small "→" prefix. Used by TaskDetailDialog + the create dialogs.
+ * When `onTypeChange` is provided, each chip also carries a link-type Select
+ * (FS finish-to-start / SS start-to-start / FF finish-to-finish / SF start-to-finish).
  */
 export function TaskDependencyPicker({
-  projectId, excludeIds, value, onChange, disabled, titleOf,
+  projectId, excludeIds, value, onChange, disabled, titleOf, typeOf, onTypeChange,
 }: {
   /** when set, candidates come from that project only; otherwise all org tasks */
   projectId?: string | null
@@ -219,6 +249,10 @@ export function TaskDependencyPicker({
   disabled?: boolean
   /** resolves a selected id to a title when the task isn't in the candidate list */
   titleOf?: (id: string) => string | undefined
+  /** current link type of a selected dependency (FS by default) */
+  typeOf?: (id: string) => string
+  /** enables the per-dependency type Select */
+  onTypeChange?: (id: string, type: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -301,6 +335,23 @@ export function TaskDependencyPicker({
               <span key={id} className="inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/40 px-1.5 py-0.5 text-[11px]">
                 <span className="shrink-0 text-muted-foreground" aria-hidden>→</span>
                 <span className="truncate">{title ?? 'Task'}</span>
+                {onTypeChange && (
+                  <Select value={typeOf?.(id) ?? 'FS'} onValueChange={(t) => onTypeChange(id, t)}>
+                    <SelectTrigger
+                      className="h-6 w-[70px] gap-0.5 px-1.5 text-[10px]"
+                      aria-label={`Link type for ${title ?? 'dependency'}`}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DEP_TYPES.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {t} · {DEP_TYPE_LABELS[t]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
                 <button
                   type="button"
                   onClick={() => onChange(value.filter((v) => v !== id))}
@@ -349,16 +400,23 @@ export function TaskDetailDialog({
   const [editingDesc, setEditingDesc] = useState(false)
   const [descDraft, setDescDraft] = useState('')
   const [form, setForm] = useState({
-    status: '', priority: '', assignee: 'none', milestone: 'none',
+    status: '', priority: '', assignee: 'none', milestone: 'none', project: 'none',
     start: '', due: '', est: '', tags: '', deps: [] as string[],
   })
   const [saving, setSaving] = useState(false)
   const [comment, setComment] = useState('')
   const [posting, setPosting] = useState(false)
+  /** per-dependency link-type overrides chosen in this dialog (graph/FS fallback) */
+  const [depTypes, setDepTypes] = useState<Record<string, string>>({})
 
   const comments = useData<{ items: CommentItem[] }>(
     open && task ? `/api/tasks/${task.id}/comments` : null
   )
+  // dependency graph slice — the authoritative link types (FS/SS/FF/SF) + badges
+  const depGraph = useData<{
+    dependencies: Array<{ dependsOnTaskId: string; type: string }>
+    dependents: Array<{ taskId: string; type: string }>
+  }>(open && task ? `/api/tasks/${task.id}/dependencies` : null)
 
   // sync local state when the dialog opens for a task
   const syncId = open ? task?.id : null
@@ -372,6 +430,7 @@ export function TaskDetailDialog({
         priority: task.priority,
         assignee: task.assigneeMembershipId ?? 'none',
         milestone: task.milestoneId ?? 'none',
+        project: task.projectId ?? 'none',
         start: toDateInput(task.startDate),
         due: toDateInput(task.dueDate),
         est: task.estimatedHours != null ? String(task.estimatedHours) : '',
@@ -380,6 +439,7 @@ export function TaskDetailDialog({
       })
       setEditingTitle(false)
       setEditingDesc(false)
+      setDepTypes({})
     }
   }, [syncId, open])
 
@@ -394,6 +454,18 @@ export function TaskDetailDialog({
     for (const d of t?.dependents ?? []) m.set(d.id, d.title)
     return (id: string) => m.get(id)
   }, [t?.dependsOn, t?.dependents])
+  /** unfinished dependencies — this task cannot start until they are done */
+  const openBlockers = (t?.dependsOn ?? []).filter((d) => !isDoneColumn(d.status ?? '', columns)).length
+  /** link type of a dependsOn id: explicit dialog choice → graph → FS */
+  const graphDepTypes = useMemo(
+    () => new Map((depGraph.data?.dependencies ?? []).map((d) => [d.dependsOnTaskId, d.type])),
+    [depGraph.data]
+  )
+  const graphDependentTypes = useMemo(
+    () => new Map((depGraph.data?.dependents ?? []).map((d) => [d.taskId, d.type])),
+    [depGraph.data]
+  )
+  const depTypeOf = (id: string): string => depTypes[id] ?? graphDepTypes.get(id) ?? 'FS'
 
   async function patch(body: Record<string, unknown>, successMsg?: string): Promise<TaskItem | null> {
     if (!t) return null
@@ -433,14 +505,29 @@ export function TaskDetailDialog({
       milestoneId: form.milestone === 'none' ? null : form.milestone,
       tags: form.tags.trim() || null,
     }
+    // moving the task to another project (or out to internal) — the milestone
+    // resets with the move (milestones belong to a single project)
+    const projectChanged = form.project !== (t.projectId ?? 'none')
+    if (projectChanged) {
+      body.projectId = form.project === 'none' ? null : form.project
+      body.milestoneId = null
+    }
     if (form.due !== toDateInput(t.dueDate)) body.dueDate = form.due || null
     if (form.start !== toDateInput(t.startDate)) body.startDate = form.start || null
     if (form.est !== (t.estimatedHours != null ? String(t.estimatedHours) : '')) {
       body.estimatedHours = form.est === '' ? null : Number(form.est)
     }
     const currentDeps = (t.dependsOn ?? []).map((d) => d.id)
-    if (form.deps.join('\u0000') !== currentDeps.join('\u0000')) body.dependsOnTaskIds = form.deps
-    await patch(body, 'Task updated')
+    const typesChanged = form.deps.some((id) => depTypeOf(id) !== (graphDepTypes.get(id) ?? 'FS'))
+    if (form.deps.join('\u0000') !== currentDeps.join('\u0000') || typesChanged) {
+      // typed dependency set — { id, type } entries (FS default) replace the links
+      body.dependsOnTaskIds = form.deps.map((id) => ({ id, type: depTypeOf(id) }))
+    }
+    const updated = await patch(body, projectChanged ? 'Task moved' : 'Task updated')
+    if (updated) {
+      if (projectChanged) setForm((f) => ({ ...f, milestone: 'none' }))
+      if (body.dependsOnTaskIds !== undefined) depGraph.refresh() // badges/types stay in sync
+    }
   }
 
   async function postComment() {
@@ -474,6 +561,9 @@ export function TaskDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] flex-col gap-0 overflow-y-auto p-0 sm:max-w-3xl">
+        <DialogDescription className="sr-only">
+          Task details — properties, dependencies, subtasks and comments.
+        </DialogDescription>
         {/* header */}
         <DialogHeader className="space-y-2 border-b p-4 sm:p-6">
           <div className="flex items-start gap-2">
@@ -595,7 +685,7 @@ export function TaskDetailDialog({
               </Card>
             )}
 
-            {/* dependencies (depends on / blocks) */}
+            {/* dependencies (depends on / blocks) — open blockers highlighted */}
             {((t.dependsOn?.length ?? 0) > 0 || (t.dependents?.length ?? 0) > 0) && (
               <Card className="py-0">
                 <CardContent className="flex flex-col gap-3 pb-4 pt-4">
@@ -603,14 +693,31 @@ export function TaskDetailDialog({
                     <div className="flex flex-col gap-1.5">
                       <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                         <Link2 className="size-3.5" aria-hidden /> Depends on
+                        {openBlockers > 0 && (
+                          <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                            {openBlockers} open — this task is blocked
+                          </span>
+                        )}
                       </p>
                       <div className="flex flex-wrap gap-1.5">
-                        {t.dependsOn!.map((d) => (
-                          <span key={d.id} className="inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 text-[11px]">
-                            <span className="shrink-0 text-muted-foreground" aria-hidden>→</span>
-                            <span className="truncate">{d.title}</span>
-                          </span>
-                        ))}
+                        {t.dependsOn!.map((d) => {
+                          const depDone = d.status ? isDoneColumn(d.status, columns) : false
+                          const linkType = d.type ?? graphDepTypes.get(d.id) ?? 'FS'
+                          return (
+                            <span
+                              key={d.id}
+                              title={`${linkType} — ${DEP_TYPE_LABELS[linkType] ?? linkType}`}
+                              className={'inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-[11px] ' + (depDone ? 'bg-emerald-600/10 border-emerald-600/20' : 'bg-amber-500/10 border-amber-500/25')}
+                            >
+                              <span className="shrink-0 text-muted-foreground" aria-hidden>→</span>
+                              <span className="truncate">{d.title}</span>
+                              <DepTypeBadge type={linkType} />
+                              {depDone
+                                ? <CheckCircle2 className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden />
+                                : <Circle className="size-3 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />}
+                            </span>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
@@ -620,12 +727,17 @@ export function TaskDetailDialog({
                         <Play className="size-3.5" aria-hidden /> Blocks
                       </p>
                       <div className="flex flex-wrap gap-1.5">
-                        {t.dependents!.map((d) => (
-                          <span key={d.id} className="inline-flex max-w-full items-center gap-1 rounded-md border bg-amber-500/15 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-400">
-                            <span className="shrink-0" aria-hidden>←</span>
-                            <span className="truncate">{d.title}</span>
-                          </span>
-                        ))}
+                        {t.dependents!.map((d) => {
+                          const depDone = d.status ? isDoneColumn(d.status, columns) : false
+                          const linkType = d.type ?? graphDependentTypes.get(d.id) ?? 'FS'
+                          return (
+                            <span key={d.id} title={`${linkType} — ${DEP_TYPE_LABELS[linkType] ?? linkType}`} className={'inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-[11px] ' + (depDone ? 'text-muted-foreground' : 'text-amber-700 dark:text-amber-400 border-amber-500/25 bg-amber-500/15')}>
+                              <span className="shrink-0" aria-hidden>←</span>
+                              <span className="truncate">{d.title}</span>
+                              <DepTypeBadge type={linkType} />
+                            </span>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
@@ -638,7 +750,8 @@ export function TaskDetailDialog({
               <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                 {t.startDate && (
                   <span className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
-                    <Play className="size-3.5" aria-hidden /> Started {relativeTime(t.startDate)}
+                    <Play className="size-3.5" aria-hidden />{' '}
+                    {new Date(t.startDate).getTime() > Date.now() ? 'Starts' : 'Started'} {relativeTime(t.startDate)}
                   </span>
                 )}
                 {t.estimatedHours != null && (
@@ -746,6 +859,32 @@ export function TaskDetailDialog({
                     </SelectContent>
                   </Select>
                 </div>
+                {/* project selector — only in org-wide task contexts (project detail passes a single project) */}
+                {canEdit && projects && projects.length > 1 && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="td-project" className="text-xs">Project</Label>
+                    <Select
+                      value={form.project}
+                      onValueChange={(v) => setForm((f) => ({ ...f, project: v, milestone: 'none' }))}
+                      disabled={!canEdit || saving}
+                    >
+                      <SelectTrigger id="td-project" className="h-11 w-full">
+                        <SelectValue placeholder="No project (internal)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No project (internal)</SelectItem>
+                        {projects.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {form.project !== (t.projectId ?? 'none') && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Saving moves the task — its milestone resets (milestones belong to one project) and both projects' progress is recalculated.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {milestones && milestones.length > 0 && (
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="td-milestone" className="text-xs">Milestone</Label>
@@ -792,6 +931,8 @@ export function TaskDetailDialog({
                       onChange={(deps) => setForm((f) => ({ ...f, deps }))}
                       disabled={saving}
                       titleOf={depTitleOf}
+                      typeOf={depTypeOf}
+                      onTypeChange={(id, type) => setDepTypes((prev) => ({ ...prev, [id]: type }))}
                     />
                   </div>
                 )}

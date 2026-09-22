@@ -2,8 +2,8 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, oneOf, logActivity, notifyUsers } from '@/lib/server/api'
 import { getOrgPolicy, parseWorkDays } from '@/lib/server/policy'
-import { localDate } from '@/lib/server/attendance'
 import { holidayDateKeys } from '@/lib/server/holidays'
+import { storedDateKey, addDaysToKey, weekdayOfDateKey } from '@/lib/server/tz'
 
 const LEAVE_ACTIONS = ['approve', 'reject', 'cancel'] as const
 
@@ -123,6 +123,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // gets an Attendance row with status LEAVE — but only when no row exists OR the existing row has
     // no sessions (never clobber a day that already has real check-in/out sessions).
     // T5: org holidays (govt/company/custom) in the range are SKIPPED — a holiday is not leave.
+    // F1: the range is iterated in calendar date-key space (stored whole-day rows).
     if (action === 'approve') {
       const policy = await getOrgPolicy(org.id)
       const workDays = parseWorkDays(policy.workDays)
@@ -131,26 +132,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         select: { startDate: true, endDate: true },
       })
       const holidayKeys = holidayDateKeys(orgHolidays)
-      const cursor = new Date(lr.startDate.getFullYear(), lr.startDate.getMonth(), lr.startDate.getDate())
-      const end = new Date(lr.endDate.getFullYear(), lr.endDate.getMonth(), lr.endDate.getDate())
+      let cursor = storedDateKey(lr.startDate)
+      const endKey = storedDateKey(lr.endDate)
       let guard = 0
-      while (cursor <= end && guard < 400) {
-        const dateStr = localDate(cursor)
-        const weekday = ((cursor.getDay() + 6) % 7) + 1 // 1=Mon..7=Sun
-        if (workDays.includes(weekday) && !holidayKeys.has(dateStr)) {
+      while (cursor <= endKey && guard < 400) {
+        const weekday = weekdayOfDateKey(cursor) // 1=Mon..7=Sun
+        if (workDays.includes(weekday) && !holidayKeys.has(cursor)) {
           const existing = await db.attendance.findUnique({
-            where: { membershipId_date: { membershipId: lr.membershipId, date: dateStr } },
+            where: { membershipId_date: { membershipId: lr.membershipId, date: cursor } },
             include: { _count: { select: { sessions: true } } },
           })
           if (!existing || existing._count.sessions === 0) {
             await db.attendance.upsert({
-              where: { membershipId_date: { membershipId: lr.membershipId, date: dateStr } },
-              create: { orgId: org.id, membershipId: lr.membershipId, date: dateStr, status: 'LEAVE' },
+              where: { membershipId_date: { membershipId: lr.membershipId, date: cursor } },
+              create: { orgId: org.id, membershipId: lr.membershipId, date: cursor, status: 'LEAVE' },
               update: { status: 'LEAVE' },
             })
           }
         }
-        cursor.setDate(cursor.getDate() + 1)
+        cursor = addDaysToKey(cursor, 1)
         guard++
       }
     }

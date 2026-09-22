@@ -5,6 +5,7 @@ import { ok, withAuth, requireOrg } from '@/lib/server/api'
 import { getOrgPolicy, minutesFromHHMM } from '@/lib/server/policy'
 import { localDate, minutesOfDay, sessionInclude, mapSession } from '@/lib/server/attendance'
 import { holidayItem, startOfDay, type HolidayRow } from '@/lib/server/holidays'
+import { addDaysToKey, zonedStartUtc, zonedWeekday } from '@/lib/server/tz'
 
 // ---------- TASK ITEM composition (mirrors /api/tasks — see T1-d/T3 contracts) ----------
 
@@ -65,7 +66,8 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
   const { membership, org } = requireOrg(ctx)
 
   const now = new Date()
-  const today = localDate(now)
+  const tz = org.timezone // F1: org-local date keys throughout (server runs UTC)
+  const today = localDate(now, tz)
 
   // ---- policy (on-time cutoff for the onTimeRate stat) ----
   const policy = await getOrgPolicy(org.id)
@@ -97,17 +99,14 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
         sessions: [] as ReturnType<typeof mapSession>[],
       }
 
-  // ---- stats window (Mon-based week · calendar month · last 30 days) ----
-  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7))
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const start30 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)
-  const fromStats = [monday, monthStart, start30].reduce((a, b) => (a < b ? a : b))
-  const mondayStr = localDate(monday)
-  const monthStartStr = localDate(monthStart)
-  const start30Str = localDate(start30)
+  // ---- stats window (Mon-based week · calendar month · last 30 days) — org-local date keys ----
+  const mondayStr = addDaysToKey(today, -(zonedWeekday(now, tz) - 1))
+  const monthStartStr = `${today.slice(0, 7)}-01`
+  const start30Str = addDaysToKey(today, -29)
+  const fromStats = [mondayStr, monthStartStr, start30Str].sort()[0] // YYYY-MM-DD sorts lexically
 
   const statsRows = await db.attendance.findMany({
-    where: { membershipId: membership.id, date: { gte: localDate(fromStats), lte: today } },
+    where: { membershipId: membership.id, date: { gte: fromStats, lte: today } },
     select: { date: true, status: true, checkIn: true, workedMinutes: true, _count: { select: { sessions: true } } },
   })
 
@@ -127,7 +126,7 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
     if (r.status === 'LATE') lateDays30++
     if (r._count.sessions > 0) {
       daysWithSessions++
-      if (r.checkIn && minutesOfDay(r.checkIn) <= cutoff) onTimeDays++
+      if (r.checkIn && minutesOfDay(r.checkIn, tz) <= cutoff) onTimeDays++
     }
   }
   const hoursThisWeek = Math.round((weekMinutes / 60) * 10) / 10
@@ -156,10 +155,11 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
   })
   const doneKeys = columns.filter((c) => c.isDone).map((c) => c.key)
   const statusOrderMap = new Map(columns.map((c) => [c.key, c.order]))
-  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const todayMidnight = zonedStartUtc(today, tz) // org-local midnight as a UTC instant
+  const start30Start = zonedStartUtc(start30Str, tz)
 
   const tasksCompleted30 = await db.task.count({
-    where: { orgId: org.id, assigneeMembershipId: membership.id, completedAt: { gte: start30 } },
+    where: { orgId: org.id, assigneeMembershipId: membership.id, completedAt: { gte: start30Start } },
   })
   const tasksOverdueCount = await db.task.count({
     where: {
@@ -218,7 +218,7 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
   })
 
   // ---- T5: upcoming org holidays (next 5 from today) + late-penalty context ----
-  const todayMidnightH = startOfDay(now)
+  const todayMidnightH = zonedStartUtc(today, tz)
   const upcomingHolidays = (
     await db.holiday.findMany({
       where: { orgId: org.id, endDate: { gte: todayMidnightH } },
@@ -230,7 +230,7 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
     .slice(0, 5)
 
   // calendar-month LATE count (mirrors the payroll period cut) + penalty preview
-  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const monthPrefix = today.slice(0, 7) // org-local YYYY-MM
   const myMonthRows = statsRows.filter((r) => r.date.startsWith(monthPrefix))
   const lateThisMonth = myMonthRows.filter((r) => r.status === 'LATE').length
   const latePolicy = {

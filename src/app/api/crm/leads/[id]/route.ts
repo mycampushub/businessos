@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, optNum, oneOf, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { money } from '../../deals/deal-helpers'
 
 const LEAD_SOURCES = ['WEBSITE', 'REFERRAL', 'SOCIAL', 'AD', 'OUTREACH', 'EVENT', 'IMPORT', 'MANUAL'] as const
 const LEAD_STATUSES = ['NEW', 'CONTACTED', 'QUALIFIED', 'UNQUALIFIED', 'CONVERTED'] as const
@@ -62,6 +63,61 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       },
     })
 
+    // ----- Lead → Deal conversion (company linkage is already persisted above) -----
+    // On the CONVERTED transition, optionally open a pipeline deal for the lead:
+    // first stage of the org's pipeline (a sensible default stage set is created
+    // when the org has NO stages at all), valued from dealValue ?? lead.value ?? 0.
+    let createdDeal: { id: string; name: string; value: number; stageName: string | null } | null = null
+    const converting = status === 'CONVERTED' && existing.status !== 'CONVERTED'
+    if (converting && b.createDeal === true) {
+      let stage = await db.pipelineStage.findFirst({
+        where: { orgId: org.id },
+        orderBy: { order: 'asc' },
+        select: { id: true, name: true },
+      })
+      if (!stage) {
+        await db.pipelineStage.createMany({
+          data: [
+            { orgId: org.id, name: 'New', order: 0 },
+            { orgId: org.id, name: 'Qualified', order: 1 },
+            { orgId: org.id, name: 'Proposed', order: 2 },
+            { orgId: org.id, name: 'Won', order: 3, isTerminalWon: true },
+            { orgId: org.id, name: 'Lost', order: 4, isTerminalLost: true },
+          ],
+        })
+        stage = await db.pipelineStage.findFirst({
+          where: { orgId: org.id },
+          orderBy: { order: 'asc' },
+          select: { id: true, name: true },
+        })
+      }
+      if (stage) {
+        const dealValue = optNum(b.dealValue)
+        const deal = await db.deal.create({
+          data: {
+            orgId: org.id,
+            name: lead.company?.trim() || lead.name,
+            value: dealValue !== undefined ? Math.max(0, dealValue) : (lead.value ?? 0),
+            companyId: lead.convertedCompanyId,
+            stageId: stage.id,
+            probability: 20,
+            ownerMembershipId: membership.id,
+            status: 'OPEN',
+          },
+          select: { id: true, name: true, value: true, stage: { select: { name: true } } },
+        })
+        createdDeal = { id: deal.id, name: deal.name, value: deal.value, stageName: deal.stage?.name ?? null }
+        await logActivity({
+          orgId: org.id,
+          actorMembershipId: membership.id,
+          action: 'deal.created',
+          entityType: 'DEAL',
+          entityId: deal.id,
+          message: `Deal "${deal.name}" created from lead "${lead.name}" (${money(deal.value)})`,
+        })
+      }
+    }
+
     if (status === 'CONVERTED' && existing.status !== 'CONVERTED') {
       await logActivity({
         orgId: org.id,
@@ -69,7 +125,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         action: 'lead.converted',
         entityType: 'LEAD',
         entityId: lead.id,
-        message: `Lead "${lead.name}" converted${convertedCompanyId ? ' to company' : ''}`,
+        message: `Lead "${lead.name}" converted${lead.convertedCompanyId ? ' to company' : ''}${createdDeal ? ` — deal "${createdDeal.name}" created in pipeline` : ''}`,
       })
     } else if (
       name !== undefined || company !== undefined || email !== undefined || phone !== undefined ||
@@ -88,7 +144,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       })
     }
 
-    return ok({ ...lead, ownerName: await ownerName(org.id, lead.ownerMembershipId) })
+    return ok({ ...lead, ownerName: await ownerName(org.id, lead.ownerMembershipId), deal: createdDeal })
   })(req)
 }
 

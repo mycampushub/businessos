@@ -83,11 +83,15 @@ import {
   CalendarDays,
   Check,
   Clock,
+  Copy,
   Eye,
   EyeOff,
   Flag,
   Info,
+  KeyRound,
+  Loader2,
   Lock,
+  MailCheck,
   Network,
   PencilLine,
   Plus,
@@ -154,6 +158,19 @@ interface HolidayItem {
   endDate: string
   days: number
   description: string | null
+}
+
+/** GET /api/hr/holidays?catalog=BD row (T7 government catalog). */
+interface CatalogHoliday {
+  year: number
+  name: string
+  type: 'GOVT'
+  startDate: string
+  endDate: string
+  days: number
+  weekday: string
+  expected: boolean
+  description: string
 }
 
 /** GET /api/settings/policy → { policy } (T3-a + T5 late-penalty fields). */
@@ -941,6 +958,8 @@ export default function SettingsView() {
             </CardContent>
           </Card>
 
+          <SecuritySection />
+
           {isOwner && (
             <Card className="border-destructive/40 gap-4">
               <CardHeader>
@@ -1508,33 +1527,14 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
   }).length
   const govtHolidays = holidays.filter((h) => h.type === 'GOVT').length
 
-  const [templateBusy, setTemplateBusy] = useState(false)
-  async function applyBdTemplate() {
-    setTemplateBusy(true)
-    try {
-      const res = await api<{ created: number }>('/api/hr/holidays', {
-        method: 'POST',
-        body: { template: 'BD_2026' },
-      })
-      if (res.created > 0) {
-        toast({
-          title: `Added ${res.created} public holidays`,
-          description: 'Bangladesh 2026 government holidays are on the calendar.',
-        })
-      } else {
-        toast({
-          title: 'All template holidays already exist',
-          description: 'Every Bangladesh 2026 template holiday is already on your calendar.',
-        })
-      }
-      holidaysQ.refresh()
-    } catch {
-      /* api() toasts the 403 role guard / 422s */
-    } finally {
-      setTemplateBusy(false)
-    }
-  }
+  const [catalogOpen, setCatalogOpen] = useState(false)
+  const [typeFilter, setTypeFilter] = useState<'ALL' | 'GOVT' | 'COMPANY' | 'CUSTOM'>('ALL')
 
+  // filtered calendar rows (type chips) — past rows stay visible but dimmed
+  const filteredHolidays = holidays.filter((h) => typeFilter === 'ALL' || h.type === typeFilter)
+  const govtCount = holidays.filter((h) => h.type === 'GOVT').length
+  const companyCount = holidays.filter((h) => h.type === 'COMPANY').length
+  const customCount = holidays.filter((h) => h.type === 'CUSTOM').length
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -1747,15 +1747,13 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
           <CardDescription>
             Government and company holidays — weekly holidays come from your work days in Rules.
           </CardDescription>
-          {canManage && (
-            <CardAction className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={applyBdTemplate} disabled={templateBusy}>
-                <Flag className="size-4" aria-hidden />
-                {templateBusy ? 'Adding…' : 'Add Bangladesh 2026 holidays'}
-              </Button>
-              <HolidayDialog onSaved={holidaysQ.refresh} />
-            </CardAction>
-          )}
+          <CardAction className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setCatalogOpen(true)}>
+              <Flag className="size-4" aria-hidden />
+              Government holidays
+            </Button>
+            {canManage && <HolidayDialog onSaved={holidaysQ.refresh} />}
+          </CardAction>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {!canManage &&
@@ -1779,17 +1777,42 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
             <EmptyState
               icon={CalendarDays}
               title="No holidays yet"
-              description="Add government and company holidays so they appear in calendars, leave and My Day."
+              description="Browse the government catalog or add company holidays so they appear in calendars, leave and My Day."
               action={
                 canManage ? (
-                  <Button variant="outline" onClick={applyBdTemplate} disabled={templateBusy}>
+                  <Button variant="outline" onClick={() => setCatalogOpen(true)}>
                     <Flag className="size-4" aria-hidden />
-                    Add Bangladesh 2026 holidays
+                    Browse government holidays
                   </Button>
                 ) : undefined
               }
             />
           ) : (
+            <div className="flex flex-col gap-3">
+              {/* type filter chips */}
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter holidays by type">
+                {([
+                  ['ALL', `All · ${holidays.length}`],
+                  ['GOVT', `Government · ${govtCount}`],
+                  ['COMPANY', `Company · ${companyCount}`],
+                  ['CUSTOM', `Custom · ${customCount}`],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTypeFilter(key)}
+                    aria-pressed={typeFilter === key}
+                    className={cn(
+                      'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                      typeFilter === key
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-card text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             <div className="max-h-96 overflow-y-auto overflow-x-auto rounded-lg border">
               <Table className="min-w-[640px]">
                 <TableHeader>
@@ -1802,8 +1825,10 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {holidays.map((h) => (
-                    <TableRow key={h.id}>
+                  {filteredHolidays.map((h) => {
+                    const isPast = new Date(h.endDate.slice(0, 10) + 'T12:00:00') < todayStart
+                    return (
+                    <TableRow key={h.id} className={isPast ? 'opacity-60' : undefined}>
                       <TableCell>
                         <div className="flex flex-col items-start gap-1.5">
                           <span className="font-medium">{h.name}</span>
@@ -1816,7 +1841,9 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
                             {holidayDate(h.startDate)}
                             {h.days > 1 ? ` – ${holidayDate(h.endDate)}` : ''}
                           </span>
-                          <span className="text-xs text-muted-foreground">{holidayWeekday(h)}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {holidayWeekday(h)}{isPast ? ' · passed' : ''}
+                          </span>
                         </div>
                       </TableCell>
                       <TableCell className="font-medium tabular-nums">
@@ -1875,9 +1902,16 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
                         </TableCell>
                       )}
                     </TableRow>
-                  ))}
+                    )
+                  })}
                 </TableBody>
               </Table>
+            </div>
+            {filteredHolidays.length === 0 && (
+              <p className="py-2 text-center text-xs text-muted-foreground">
+                No {HOLIDAY_TYPE_LABELS[typeFilter] ?? typeFilter.toLowerCase()} holidays on the calendar yet.
+              </p>
+            )}
             </div>
           )}
 
@@ -1893,6 +1927,15 @@ function LeaveTab({ onGoToRules }: { onGoToRules: () => void }) {
           </div>
         </CardContent>
       </Card>
+
+      {/* government holiday catalog — browse + import (T7) */}
+      <GovtHolidayDialog
+        open={catalogOpen}
+        onOpenChange={setCatalogOpen}
+        existing={holidays}
+        canManage={canManage}
+        onSaved={holidaysQ.refresh}
+      />
     </div>
   )
 }
@@ -2057,6 +2100,198 @@ function LeaveTypeDialog({
             {saving ? 'Saving…' : editing ? 'Save changes' : 'Create leave type'}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ---------- government holiday catalog dialog (T7) ----------
+
+function GovtHolidayDialog({
+  open,
+  onOpenChange,
+  existing,
+  canManage,
+  onSaved,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  existing: HolidayItem[]
+  canManage: boolean
+  onSaved: () => void
+}) {
+  const catalogQ = useData<{ years: number[]; catalog: CatalogHoliday[] }>(
+    open ? '/api/hr/holidays?catalog=BD' : null
+  )
+  const [year, setYear] = useState<number | null>(null)
+  const [busyName, setBusyName] = useState<string | null>(null)
+  const [addingAll, setAddingAll] = useState(false)
+
+  const years = catalogQ.data?.years ?? []
+  const activeYear = year ?? years[0] ?? new Date().getFullYear()
+  const rows = (catalogQ.data?.catalog ?? []).filter((c) => c.year === activeYear)
+
+  /** a catalog row is on the calendar when name+start match an existing holiday */
+  const onCalendar = (c: CatalogHoliday): HolidayItem | undefined =>
+    existing.find((h) => h.name === c.name && h.startDate.slice(0, 10) === c.startDate.slice(0, 10))
+
+  async function addHolidays(names?: string[]) {
+    setAddingAll(!names)
+    if (names?.length === 1) setBusyName(names[0])
+    try {
+      const res = await api<{ created: number }>('/api/hr/holidays', {
+        method: 'POST',
+        body: names ? { template: 'BD', year: activeYear, names } : { template: 'BD', year: activeYear },
+      })
+      if (res.created > 0) {
+        toast({
+          title: names?.length === 1 ? 'Holiday added' : `Added ${res.created} public holidays`,
+          description:
+            names?.length === 1
+              ? `${names[0]} is on the calendar for ${activeYear}.`
+              : `Bangladesh ${activeYear} government holidays were added to your calendar.`,
+        })
+      } else {
+        toast({
+          title: 'Already on the calendar',
+          description: names?.length === 1 ? `${names[0]} is already on your calendar.` : 'Those holidays are already on your calendar.',
+        })
+      }
+      onSaved()
+    } catch {
+      /* api() toasts the 403 role guard */
+    } finally {
+      setAddingAll(false)
+      setBusyName(null)
+    }
+  }
+
+  const addedCount = rows.filter((r) => onCalendar(r)).length
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <DialogHeader className="border-b p-4 sm:p-6">
+          <DialogTitle className="flex items-center gap-2">
+            <Flag className="size-4 text-muted-foreground" aria-hidden />
+            Government holidays
+          </DialogTitle>
+          <DialogDescription>
+            The Bangladesh public-holiday catalog — review the dates and add the ones your organization
+            observes. Added holidays appear in calendars, leave and My Day.
+          </DialogDescription>
+          {years.length > 1 && (
+            <Tabs value={String(activeYear)} onValueChange={(v) => setYear(Number(v))}>
+              <TabsList className="h-9 w-fit">
+                {years.map((y) => (
+                  <TabsTrigger key={y} value={String(y)} className="px-4">
+                    {y}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          )}
+        </DialogHeader>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+          {catalogQ.loading ? (
+            Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="mb-2 h-12 w-full rounded-lg" />)
+          ) : catalogQ.error ? (
+            <EmptyState
+              icon={Flag}
+              title="Catalog unavailable"
+              description={catalogQ.error}
+              action={
+                <Button variant="outline" onClick={catalogQ.refresh}>
+                  Reload
+                </Button>
+              }
+            />
+          ) : rows.length === 0 ? (
+            <EmptyState icon={Flag} title="No catalog entries" description={`No government holidays listed for ${activeYear}.`} />
+          ) : (
+            <div className="overflow-hidden rounded-lg border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="min-w-48">Holiday</TableHead>
+                    <TableHead className="min-w-36">Date</TableHead>
+                    <TableHead>Days</TableHead>
+                    <TableHead className="text-right">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((c) => {
+                    const added = onCalendar(c)
+                    return (
+                      <TableRow key={`${c.year}-${c.name}`}>
+                        <TableCell>
+                          <div className="flex flex-col items-start gap-1">
+                            <span className="font-medium">{c.name}</span>
+                            {c.expected && (
+                              <span className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                                Expected date — lunar calendar
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span className="text-sm">
+                              {holidayDate(c.startDate)}
+                              {c.days > 1 ? ` – ${holidayDate(c.endDate)}` : ''}
+                            </span>
+                            <span className="text-xs text-muted-foreground">{c.weekday}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-medium tabular-nums">
+                          {c.days} {c.days === 1 ? 'day' : 'days'}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {added ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                              <Check className="size-3.5" aria-hidden /> On calendar
+                            </span>
+                          ) : canManage ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              disabled={addingAll || busyName === c.name}
+                              onClick={() => addHolidays([c.name])}
+                              aria-label={`Add ${c.name} to the calendar`}
+                            >
+                              {busyName === c.name ? 'Adding…' : 'Add'}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Not added</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-3 border-t p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+          <p className="text-xs text-muted-foreground">
+            {rows.length > 0
+              ? `${addedCount} of ${rows.length} catalog holidays for ${activeYear} are on your calendar. Dates marked “expected” follow the lunar calendar — adjust them once the government announces the official dates.`
+              : 'Dates follow the Bangladesh government calendar.'}
+          </p>
+          {canManage && rows.length > 0 && (
+            <Button
+              className="shrink-0"
+              onClick={() => addHolidays()}
+              disabled={addingAll || addedCount === rows.length}
+            >
+              {addingAll ? 'Adding…' : `Add all ${activeYear} holidays`}
+            </Button>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )
@@ -2510,3 +2745,357 @@ const FORM_KEYS: Array<keyof ProfileForm> = [
   'currency',
   'timezone',
 ]
+
+// ---------- Security section (General tab) — F3 auth hardening ----------
+
+/** GET /api/auth/me security slice (F3 — additive fields). */
+interface SecurityMeShape {
+  user: { emailVerified: string | null; mfaEnabled: boolean }
+  verifyUrl: string | null
+}
+
+interface MfaSetupData {
+  secret: string
+  otpauthUrl: string
+}
+
+async function copyText(text: string, what: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast({ title: 'Copied to clipboard', description: `${what} copied.` })
+  } catch {
+    toast({
+      title: 'Copy failed',
+      description: `Please select the ${what.toLowerCase()} manually and copy it.`,
+      variant: 'destructive',
+    })
+  }
+}
+
+function SecuritySection() {
+  const securityQ = useData<SecurityMeShape>('/api/auth/me')
+  const me = securityQ.data
+  const verified = !!me?.user.emailVerified
+  const mfaEnabled = !!me?.user.mfaEnabled
+  const loading = securityQ.loading
+
+  // enable flow
+  const [enableOpen, setEnableOpen] = useState(false)
+  const [setup, setSetup] = useState<MfaSetupData | null>(null)
+  const [setupBusy, setSetupBusy] = useState(false)
+  const [enrollCode, setEnrollCode] = useState('')
+  const [verifyBusy, setVerifyBusy] = useState(false)
+
+  // disable flow
+  const [disableOpen, setDisableOpen] = useState(false)
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+  const [disableBusy, setDisableBusy] = useState(false)
+
+  const resetEnable = () => {
+    setSetup(null)
+    setEnrollCode('')
+    setSetupBusy(false)
+    setVerifyBusy(false)
+  }
+
+  const resetDisable = () => {
+    setDisablePassword('')
+    setDisableCode('')
+    setDisableBusy(false)
+  }
+
+  async function startSetup() {
+    setSetupBusy(true)
+    try {
+      const res = await api<MfaSetupData>('/api/auth/mfa/setup', { method: 'POST' })
+      setSetup(res)
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setSetupBusy(false)
+    }
+  }
+
+  async function confirmEnroll(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!/^\d{6}$/.test(enrollCode.replace(/\s+/g, ''))) {
+      toast({
+        title: 'Invalid code',
+        description: 'Enter the 6-digit code from your authenticator app.',
+        variant: 'destructive',
+      })
+      return
+    }
+    setVerifyBusy(true)
+    try {
+      await api('/api/auth/mfa/verify', { method: 'POST', body: { code: enrollCode } })
+      toast({
+        title: 'Two-factor authentication enabled',
+        description: 'You will be asked for a 6-digit code at your next sign-in.',
+      })
+      setEnableOpen(false)
+      resetEnable()
+      securityQ.refresh()
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setVerifyBusy(false)
+    }
+  }
+
+  async function disableMfa(e?: React.FormEvent) {
+    e?.preventDefault()
+    setDisableBusy(true)
+    try {
+      await api('/api/auth/mfa/disable', {
+        method: 'POST',
+        body: { password: disablePassword, code: disableCode },
+      })
+      toast({ title: 'Two-factor authentication disabled', description: 'Sign-in now needs your password only.' })
+      setDisableOpen(false)
+      resetDisable()
+      securityQ.refresh()
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setDisableBusy(false)
+    }
+  }
+
+  return (
+    <Card className="gap-4">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ShieldCheck className="size-4 text-muted-foreground" aria-hidden />
+          Security
+        </CardTitle>
+        <CardDescription>Email verification and two-factor authentication for your account.</CardDescription>
+        {!loading && (
+          <CardAction>
+            {mfaEnabled ? (
+              <Button variant="outline" onClick={() => setDisableOpen(true)}>
+                Disable 2FA
+              </Button>
+            ) : (
+              <Button
+                onClick={() => {
+                  setEnableOpen(true)
+                  if (!setup) void startSetup()
+                }}
+              >
+                <KeyRound className="size-4" aria-hidden />
+                Enable 2FA
+              </Button>
+            )}
+          </CardAction>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <MailCheck className="size-4 text-muted-foreground" aria-hidden />
+              <p className="text-sm font-medium">Email verification</p>
+              {loading ? (
+                <Skeleton className="h-5 w-16" />
+              ) : verified ? (
+                <StatusBadge label="Verified" tone="success" />
+              ) : (
+                <StatusBadge label="Pending" tone="warning" />
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {verified
+                ? `Verified on ${fmtDate(me?.user.emailVerified ?? '')}`
+                : me?.verifyUrl
+                  ? 'No email delivery in this environment — copy the verification link and open it to confirm your address.'
+                  : 'No verification link is available for this account (links are issued at sign-up).'}
+            </p>
+          </div>
+          {!loading && !verified && me?.verifyUrl && (
+            <Button
+              variant="outline"
+              className="shrink-0"
+              onClick={() => copyText(`${window.location.origin}${me.verifyUrl}`, 'Verification link')}
+            >
+              <Copy className="size-4" aria-hidden />
+              Copy verification link
+            </Button>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <KeyRound className="size-4 text-muted-foreground" aria-hidden />
+              <p className="text-sm font-medium">Two-factor authentication</p>
+              {loading ? (
+                <Skeleton className="h-5 w-16" />
+              ) : mfaEnabled ? (
+                <StatusBadge label="Enabled" tone="success" />
+              ) : (
+                <StatusBadge label="Disabled" tone="muted" />
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {mfaEnabled
+                ? 'Sign-in requires your password plus a 6-digit code from your authenticator app.'
+                : 'Add a TOTP authenticator app (e.g. Google Authenticator, 1Password) as a second sign-in step.'}
+            </p>
+          </div>
+        </div>
+      </CardContent>
+
+      {/* ----- enable flow: secret → code ----- */}
+      <Dialog
+        open={enableOpen}
+        onOpenChange={(o) => {
+          setEnableOpen(o)
+          if (!o) resetEnable()
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Enable two-factor authentication</DialogTitle>
+            <DialogDescription>
+              Add your account to an authenticator app, then confirm with a generated code.
+            </DialogDescription>
+          </DialogHeader>
+
+          {setupBusy && !setup ? (
+            <div className="flex flex-col gap-3">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : setup ? (
+            <form onSubmit={confirmEnroll} className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Secret key</p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-xs"
+                    onClick={() => copyText(setup.secret, 'Secret key')}
+                  >
+                    <Copy className="size-3" aria-hidden />
+                    Copy
+                  </Button>
+                </div>
+                <code className="block select-all rounded-md border bg-muted/40 p-3 font-mono text-xs break-all">
+                  {setup.secret}
+                </code>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">otpauth URL</p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-xs"
+                    onClick={() => copyText(setup.otpauthUrl, 'otpauth URL')}
+                  >
+                    <Copy className="size-3" aria-hidden />
+                    Copy
+                  </Button>
+                </div>
+                <code className="block select-all rounded-md border bg-muted/40 p-3 font-mono text-[11px] break-all">
+                  {setup.otpauthUrl}
+                </code>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="mfa-enroll-code">Verification code</Label>
+                <Input
+                  id="mfa-enroll-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="6-digit code"
+                  maxLength={6}
+                  value={enrollCode}
+                  onChange={(e) => setEnrollCode(e.target.value.replace(/[^\d]/g, ''))}
+                  autoFocus
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter the code your app currently shows to finish enabling 2FA.
+                </p>
+              </div>
+              <DialogFooter>
+                <Button type="submit" disabled={verifyBusy}>
+                  {verifyBusy && <Loader2 className="size-4 animate-spin" />}
+                  Verify &amp; enable
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <p className="text-sm text-muted-foreground">
+                A secret key is generated for your authenticator app when setup starts.
+              </p>
+              <Button onClick={startSetup} disabled={setupBusy}>
+                {setupBusy && <Loader2 className="size-4 animate-spin" />}
+                Generate secret
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ----- disable flow ----- */}
+      <Dialog
+        open={disableOpen}
+        onOpenChange={(o) => {
+          setDisableOpen(o)
+          if (!o) resetDisable()
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Disable two-factor authentication</DialogTitle>
+            <DialogDescription>
+              Confirm with your password and a current 6-digit code to turn 2FA off.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={disableMfa} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="mfa-disable-password">Password</Label>
+              <Input
+                id="mfa-disable-password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="mfa-disable-code">Verification code</Label>
+              <Input
+                id="mfa-disable-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="6-digit code"
+                maxLength={6}
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value.replace(/[^\d]/g, ''))}
+                required
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setDisableOpen(false)} disabled={disableBusy}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="destructive" disabled={disableBusy}>
+                {disableBusy && <Loader2 className="size-4 animate-spin" />}
+                Disable 2FA
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  )
+}

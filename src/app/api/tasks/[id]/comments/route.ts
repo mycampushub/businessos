@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, logActivity, notifyUsers } from '@/lib/server/api'
+import { requireAccess } from '@/lib/server/access'
+import { canAccessTask } from '@/lib/server/projects-access'
 
 type RouteParams = { params: Promise<{ id: string }> }
+
+/** task fields needed by canAccessTask (assignment scoping) + comment creation */
+const taskAccessSelect = {
+  id: true,
+  title: true,
+  orgId: true,
+  projectId: true,
+  assigneeMembershipId: true,
+  creatorMembershipId: true,
+  project: { select: { managerMembershipId: true, projectMembers: { select: { membershipId: true } } } },
+} as const
 
 const commentInclude = {
   author: { select: { id: true, role: true, title: true, user: { select: { id: true, name: true, avatarUrl: true } } } },
@@ -12,10 +25,14 @@ const commentInclude = {
 export async function GET(_req: NextRequest, route: RouteParams): Promise<NextResponse> {
   const { id } = await route.params
   return withAuth(async (_r, ctx) => {
-    const { org } = requireOrg(ctx)
+    const { membership, org } = requireOrg(ctx)
+    const denied = requireAccess(ctx, 'tasks', 'view')
+    if (denied) return denied
 
-    const task = await db.task.findFirst({ where: { id, orgId: org.id }, select: { id: true } })
-    if (!task) return fail('Task not found', 404)
+    const task = await db.task.findFirst({ where: { id, orgId: org.id }, select: taskAccessSelect })
+    if (!task || !canAccessTask(org.id, membership.id, membership.role, task)) {
+      return fail('Task not found', 404)
+    }
 
     const comments = await db.comment.findMany({
       where: { orgId: org.id, entityType: 'TASK', entityId: task.id },
@@ -31,17 +48,18 @@ export async function GET(_req: NextRequest, route: RouteParams): Promise<NextRe
   })(_req)
 }
 
-/** POST /api/tasks/[id]/comments — add a comment (any org member) */
+/** POST /api/tasks/[id]/comments — add a comment (tasks module view-min, task must be visible) */
 export async function POST(req: NextRequest, route: RouteParams): Promise<NextResponse> {
   const { id } = await route.params
   return withAuth(async (_r, ctx) => {
     const { membership, org } = requireOrg(ctx)
+    const denied = requireAccess(ctx, 'tasks', 'view')
+    if (denied) return denied
 
-    const task = await db.task.findFirst({
-      where: { id, orgId: org.id },
-      select: { id: true, title: true, assigneeMembershipId: true },
-    })
-    if (!task) return fail('Task not found', 404)
+    const task = await db.task.findFirst({ where: { id, orgId: org.id }, select: taskAccessSelect })
+    if (!task || !canAccessTask(org.id, membership.id, membership.role, task)) {
+      return fail('Task not found', 404)
+    }
 
     const data = await body(req)
     const text = str(data.body, 'body', { max: 8000 })

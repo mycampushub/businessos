@@ -1,0 +1,28 @@
+/**
+ * OrgOS cron trigger worker — wrangler config.
+ * Runs cloudflare/cron-worker.ts on a daily schedule; the worker POSTs to
+ * the main app's /api/cron/daily endpoint (see cloudflare/README.md).
+ *
+ * NOTE: wrangler resolves paths in a config file relative to THIS file's
+ * location (cloudflare/), so "main" is "cron-worker.ts", NOT
+ * "cloudflare/cron-worker.ts".
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "orgos-cron",
+  "main": "cron-worker.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // 01:00 UTC daily — invoice/subscription/trial sweeps, reminders, session purge
+  "triggers": {
+    "crons": ["0 1 * * *"]
+  },
+
+  // Secrets (never commit — set with `wrangler secret put --config cloudflare/cron-wrangler.jsonc`):
+  //   APP_URL      → https://<your-orgos-workers-domain>
+  //   CRON_SECRET  → must match the main worker's CRON_SECRET
+  "observability": {
+    "enabled": true
+  }
+}

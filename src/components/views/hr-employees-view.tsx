@@ -7,6 +7,7 @@ import { PageHeader, EmptyState } from '@/components/app/page-header'
 import { StatCard } from '@/components/app/stat-card'
 import { StatusBadge } from '@/components/app/status-badge'
 import { UserAvatar } from '@/components/app/user-avatar'
+import { rowClick } from '@/components/app/row-click'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -198,9 +199,9 @@ export default function HrEmployeesView() {
                 {filtered.map((e) => (
                   <TableRow
                     key={e.id}
-                    className="cursor-pointer"
-                    onClick={() => setSelected(e)}
+                    className="cursor-pointer focus-visible:bg-muted/60 focus-visible:outline-none"
                     aria-label={`Open ${e.name}`}
+                    {...rowClick(() => setSelected(e))}
                   >
                     <TableCell>
                       <div className="flex items-center gap-3">

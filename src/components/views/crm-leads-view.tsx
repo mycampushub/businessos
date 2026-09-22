@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -108,6 +109,9 @@ export default function CrmLeadsView() {
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState<LeadItem | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [converting, setConverting] = useState<LeadItem | null>(null)
+  const [convertForm, setConvertForm] = useState({ createDeal: true, dealValue: '' })
+  const [convertingBusy, setConvertingBusy] = useState(false)
 
   function openCreate() {
     setEditing(null)
@@ -177,15 +181,36 @@ export default function CrmLeadsView() {
     }
   }
 
-  async function convertLead(lead: LeadItem) {
-    setBusyId(lead.id)
+  function openConvert(lead: LeadItem) {
+    setConverting(lead)
+    setConvertForm({ createDeal: true, dealValue: lead.value != null ? String(lead.value) : '' })
+  }
+
+  async function confirmConvert() {
+    if (!converting) return
+    const lead = converting
+    setConvertingBusy(true)
     try {
-      await api(`/api/crm/leads/${lead.id}`, { method: 'PATCH', body: { status: 'CONVERTED' } })
-      toast({ title: 'Lead converted to company', description: `${lead.name} is ready for the deal pipeline.` })
+      const res = await api<{ deal: { name: string; value: number; stageName: string | null } | null }>(`/api/crm/leads/${lead.id}`, {
+        method: 'PATCH',
+        body: {
+          status: 'CONVERTED',
+          createDeal: convertForm.createDeal,
+          ...(convertForm.createDeal && convertForm.dealValue !== '' ? { dealValue: Number(convertForm.dealValue) } : {}),
+        },
+      })
+      toast({
+        title: res.deal ? 'Lead converted — deal created' : 'Lead converted',
+        description: res.deal
+          ? `"${res.deal.name}" opened in the pipeline at ${money(res.deal.value, cur)}${res.deal.stageName ? ` (${res.deal.stageName})` : ''}.`
+          : `${lead.name} is marked converted.`,
+      })
+      setConverting(null)
       refresh()
     } catch {
+      // api() already toasts the error
     } finally {
-      setBusyId(null)
+      setConvertingBusy(false)
     }
   }
 
@@ -399,7 +424,7 @@ export default function CrmLeadsView() {
                               <Pencil className="size-4" aria-hidden /> Edit
                             </DropdownMenuItem>
                             {lead.status !== 'CONVERTED' && (
-                              <DropdownMenuItem onClick={() => void convertLead(lead)}>
+                              <DropdownMenuItem onClick={() => openConvert(lead)}>
                                 <Building2 className="size-4" aria-hidden /> Convert to company
                               </DropdownMenuItem>
                             )}
@@ -475,6 +500,52 @@ export default function CrmLeadsView() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>
             <Button onClick={() => void saveLead()} disabled={saving}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Create lead'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* convert dialog — status flip + optional pipeline deal */}
+      <Dialog open={!!converting} onOpenChange={(o) => { if (!o) setConverting(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Convert “{converting?.name}”?</DialogTitle>
+            <DialogDescription>
+              The lead will be marked converted{converting?.company ? ` and linked to ${converting.company}` : ''}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-3">
+              <div className="min-w-0">
+                <Label htmlFor="lead-create-deal" className="text-sm">Create deal in pipeline</Label>
+                <p className="text-xs text-muted-foreground">Open an opportunity for this lead right away.</p>
+              </div>
+              <Switch
+                id="lead-create-deal"
+                checked={convertForm.createDeal}
+                onCheckedChange={(v) => setConvertForm((f) => ({ ...f, createDeal: v }))}
+                aria-label="Create deal in pipeline"
+              />
+            </div>
+            {convertForm.createDeal && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="lead-deal-value">Deal value ({currencySymbol(cur)})</Label>
+                <Input
+                  id="lead-deal-value"
+                  type="number"
+                  min="0"
+                  value={convertForm.dealValue}
+                  onChange={(e) => setConvertForm((f) => ({ ...f, dealValue: e.target.value }))}
+                  placeholder="0"
+                />
+                <p className="text-xs text-muted-foreground">Prefilled from the lead's estimated value.</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConverting(null)}>Cancel</Button>
+            <Button disabled={convertingBusy} onClick={() => void confirmConvert()}>
+              {convertingBusy ? 'Converting…' : 'Convert lead'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

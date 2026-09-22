@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { useWorkspace, type MeShape } from '@/lib/client/store'
 import { AppSidebar, AppMobileNav } from './sidebar'
 import { AppTopbar } from './topbar'
+import { ErrorBoundary } from './error-boundary'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/hooks/use-toast'
 import { LifeBuoy, LogOut } from 'lucide-react'
@@ -33,6 +34,7 @@ import MyDayView from '@/components/views/my-day-view'
 import PayrollView from '@/components/views/payroll-view'
 import PlatformAdminView from '@/components/views/platform-admin-view'
 import MeetingsView from '@/components/views/meetings-view'
+import BillingView from '@/components/views/billing-view'
 
 const VIEWS: Record<string, React.ComponentType> = {
   dashboard: DashboardView,
@@ -54,6 +56,7 @@ const VIEWS: Record<string, React.ComponentType> = {
   'finance-payroll': PayrollView,
   documents: DocumentsView,
   announcements: AnnouncementsView,
+  billing: BillingView,
   reports: ReportsView,
   settings: SettingsView,
   profile: ProfileView,
@@ -167,7 +170,9 @@ export function WorkspaceShell() {
         {impersonatedBy && <SupportSessionBanner impersonatedBy={impersonatedBy} />}
         <main id="content" className="flex-1 px-4 py-5 sm:px-6 lg:px-8">
           <div className="mx-auto w-full max-w-7xl">
-            <View key={nav.module + (nav.params?.projectId ?? '')} />
+            <ErrorBoundary key={nav.module + (nav.params?.projectId ?? '')}>
+              <View />
+            </ErrorBoundary>
           </div>
         </main>
         <footer className="mt-auto border-t bg-card px-6 py-3 text-center text-[11px] text-muted-foreground">

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
+import { requireAccess } from '@/lib/server/access'
 import { chargeableLeaveDays, holidayDateKeys, holidayContext } from '@/lib/server/holidays'
 
 const INCLUDE = {
@@ -57,9 +58,13 @@ async function approverNameMap(orgId: string, rows: LeaveRow[]): Promise<Map<str
 }
 
 // GET /api/hr/leave?mine=true — leave requests + org leave types + ctx user's balances
+// Module gate: hr-leave view-minimum (org-wide list and self list alike — an
+// employee's own leave also flows through /api/my, which is not module-gated).
 export async function GET(req: NextRequest) {
   return withAuth(async (rq, ctx) => {
     const { org, membership } = requireOrg(ctx)
+    const denied = requireAccess(ctx, 'hr-leave', 'view')
+    if (denied) return denied
     const mine = rq.nextUrl.searchParams.get('mine') === 'true'
 
     const rows = await db.leaveRequest.findMany({
@@ -110,7 +115,8 @@ export async function POST(req: NextRequest) {
     }
 
     // T5: days are SERVER-COMPUTED — work days minus weekly holidays (policy) and
-    // public/company holidays. The client "days" value is ignored (preview-only).
+    // public/company holidays, in pure calendar-key space. The client "days"
+    // value is ignored (preview-only).
     const { holidays, workDays } = await holidayContext(org.id)
     const holidayKeys = holidayDateKeys(holidays)
     const days = chargeableLeaveDays(startDate, endDate, workDays, holidayKeys)

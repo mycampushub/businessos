@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, body, str, withAuth, requireOrg, requireRole, logActivity } from '@/lib/server/api'
 import { setActiveOrgCookie } from '@/lib/server/auth'
+import { assignSubscription } from '@/lib/server/billing'
 
 // Server-side copy of the template map (mirrors ORG_TEMPLATES in components/app/onboarding.tsx)
 const ORG_TEMPLATES: Record<string, string[]> = {
@@ -170,6 +171,36 @@ export async function POST(req: NextRequest) {
       entityId: org.id,
       message: `Organization "${org.name}" created`,
     })
+
+    // ---- 14-day trial on the best available paid plan (F4) ----
+    // GROWTH first, else STARTER, else the first active plan. Billing must NEVER
+    // break org creation — the whole block is best-effort.
+    try {
+      const candidates = await db.plan.findMany({
+        where: { isActive: true, code: { not: 'FREE' } },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        select: { code: true, seatLimit: true },
+      })
+      const trialPlan =
+        candidates.find((p) => p.code === 'GROWTH') ?? candidates.find((p) => p.code === 'STARTER') ?? candidates[0]
+      if (trialPlan) {
+        const sub = await assignSubscription({
+          orgId: org.id,
+          planCode: trialPlan.code,
+          billingCycle: 'MONTHLY',
+          seats: Math.min(5, trialPlan.seatLimit),
+          status: 'TRIALING',
+          trialDays: 14,
+          actorName: ctx.user.name,
+        })
+        // the trial itself is free — zero out the normalized monthly amount
+        if (sub.amountMonthly !== 0) {
+          await db.subscription.update({ where: { id: sub.id }, data: { amountMonthly: 0 } })
+        }
+      }
+    } catch (err) {
+      console.error('[org-trial]', err)
+    }
 
     return ok({ org, membership })
   })(req)

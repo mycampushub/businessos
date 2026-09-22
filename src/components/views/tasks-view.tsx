@@ -21,6 +21,7 @@ import { StatCard } from '@/components/app/stat-card'
 import { StatusBadge, PriorityDot } from '@/components/app/status-badge'
 import { UserAvatar } from '@/components/app/user-avatar'
 import { KanbanBoard, type KanbanColumnDef } from '@/components/app/kanban'
+import { rowClick } from '@/components/app/row-click'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -636,7 +637,12 @@ export default function TasksView() {
                     const due = dueLabel(t.dueDate)
                     const dimmed = doneKeys.has(t.status)
                     return (
-                      <TableRow key={t.id} className="cursor-pointer" onClick={() => openDetail(t)}>
+                      <TableRow
+                        key={t.id}
+                        className="cursor-pointer focus-visible:bg-muted/60 focus-visible:outline-none"
+                        aria-label={`Open task ${t.title}`}
+                        {...rowClick(() => openDetail(t))}
+                      >
                         <TableCell className="max-w-72">
                           <div className="flex items-center gap-2">
                             <span className="shrink-0"><PriorityDot priority={t.priority} /></span>

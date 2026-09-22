@@ -13,7 +13,7 @@ export type ModuleId =
   | 'recruit-jobs' | 'recruit-candidates'
   | 'finance-invoices' | 'finance-expenses' | 'finance-payroll'
   | 'documents' | 'announcements' | 'settings' | 'my-day'
-  | 'meetings' | 'platform-admin'
+  | 'meetings' | 'platform-admin' | 'billing'
 
 /** Modules that are always available to every member (never access-guarded). */
 export const SELF_MODULES: ModuleId[] = ['my-day', 'my-tasks', 'profile', 'settings']
@@ -84,9 +84,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const refreshMe = useCallback(async () => {
     setLoadingMe(true)
     try {
-      const data = await api<MeShape>('/api/auth/me', { silent: true })
-      setMe(data)
-      return data
+      // /api/auth/me answers 200 + null for anonymous visitors (by design —
+      // see the route), so no console noise for signed-out users.
+      const data = await api<MeShape | null>('/api/auth/me', { silent: true })
+      const resolved = data && data.user ? data : null
+      setMe(resolved)
+      return resolved
     } catch {
       setMe(null)
       return null
@@ -174,23 +177,32 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     [accessMap]
   )
 
-  const value: WorkspaceCtx = {
-    me,
-    loadingMe,
-    refreshMe,
-    logout,
-    org: activeMembership?.org ?? null,
-    membership: activeMembership,
-    role: activeMembership?.role ?? '',
-    access: accessMap,
-    can,
-    canView,
-    nav,
-    navigate,
-    notifications,
-    unreadCount: notifications.filter((n) => !n.readAt).length,
-    refreshNotifications,
-  }
+  // Memoized so consumers only re-render when one of these inputs actually
+  // changes — the value object itself stays referentially stable between
+  // unrelated state updates (e.g. notification ticks).
+  const value = useMemo<WorkspaceCtx>(
+    () => ({
+      me,
+      loadingMe,
+      refreshMe,
+      logout,
+      org: activeMembership?.org ?? null,
+      membership: activeMembership,
+      role: activeMembership?.role ?? '',
+      access: accessMap,
+      can,
+      canView,
+      nav,
+      navigate,
+      notifications,
+      unreadCount: notifications.filter((n) => !n.readAt).length,
+      refreshNotifications,
+    }),
+    [
+      me, loadingMe, refreshMe, logout, activeMembership, accessMap, can, canView,
+      nav, navigate, notifications, refreshNotifications,
+    ]
+  )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

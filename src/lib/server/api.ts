@@ -30,12 +30,39 @@ export interface AuthCtx extends SessionInfo {
   org: { id: string; name: string; slug: string; currency: string; timezone: string; ownerId: string } | null
 }
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number
   constructor(message: string, status = 400) {
     super(message)
     this.status = status
   }
+}
+
+// ---------- SaaS subscription write-gate ----------
+// EXPIRED orgs become read-only: reads keep working, mutations return 402 so the
+// tenant can still see their data and renew from Billing & Plan.
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+const SUB_EXEMPT = ['/api/auth', '/api/billing', '/api/platform', '/api/cron']
+const subCache = new Map<string, { status: string | null; at: number }>()
+const SUB_CACHE_MS = 60_000
+
+async function orgSubscriptionStatus(orgId: string): Promise<string | null> {
+  const hit = subCache.get(orgId)
+  if (hit && Date.now() - hit.at < SUB_CACHE_MS) return hit.status
+  const sub = await db.subscription.findFirst({
+    where: { orgId },
+    orderBy: { createdAt: 'desc' },
+    select: { status: true },
+  })
+  const status = sub?.status ?? null
+  subCache.set(orgId, { status, at: Date.now() })
+  return status
+}
+
+/** Call after any subscription status change so enforcement is immediate. */
+export function invalidateSubscriptionCache(orgId?: string) {
+  if (orgId) subCache.delete(orgId)
+  else subCache.clear()
 }
 
 // Canonical usage (Next 16):
@@ -68,11 +95,24 @@ export function withAuth(
           })
         }
       }
+      // ---- subscription write-gate (EXPIRED orgs are read-only) ----
+      if (org && MUTATING.has(req.method) && !SUB_EXEMPT.some((pfx) => req.nextUrl.pathname.startsWith(pfx))) {
+        const subStatus = await orgSubscriptionStatus(org.id)
+        if (subStatus === 'EXPIRED') {
+          return fail('Your subscription has expired. Data is read-only — renew from Billing & Plan to continue.', 402)
+        }
+      }
       return await handler(req, { ...session, membership, org })
     } catch (err) {
       if (err instanceof ApiError) return fail(err.message, err.status)
       console.error('[api]', err)
-      const message = err instanceof Error ? err.message : 'Internal server error'
+      // F3: never leak raw error text in production
+      const message =
+        process.env.NODE_ENV === 'production'
+          ? 'Internal server error'
+          : err instanceof Error
+            ? err.message
+            : 'Internal server error'
       return fail(message, 500)
     }
   }
@@ -110,7 +150,10 @@ export async function body<T = Record<string, unknown>>(req: NextRequest): Promi
 export function str(v: unknown, field: string, opts: { required?: boolean; max?: number } = {}): string {
   const s = typeof v === 'string' ? v.trim() : ''
   if (opts.required !== false && !s) throw new ApiError(`Field "${field}" is required`, 422)
-  if (opts.max && s.length > opts.max) return s.slice(0, opts.max)
+  // F3: reject over-length input instead of silently truncating
+  if (opts.max && s.length > opts.max) {
+    throw new ApiError(`Field "${field}" must be at most ${opts.max} characters`, 422)
+  }
   return s
 }
 

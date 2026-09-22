@@ -32,9 +32,9 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
   const q = (url.searchParams.get('q') ?? '').trim()
   if (q.length < 2) return ok({ results: [] })
 
-  // per-type module access: FULL or VIEW (missing key → VIEW); OWNER is always FULL
+  // per-type module access: FULL or VIEW (unknown/missing key → HIDDEN, fail-closed); OWNER is always FULL
   const level = (module: string): string =>
-    membership.role === 'OWNER' ? 'FULL' : (ctx.access[module] ?? 'VIEW')
+    membership.role === 'OWNER' ? 'FULL' : (ctx.access[module] ?? 'HIDDEN')
   const searchable = (module: string): boolean => {
     const l = level(module)
     return l === 'FULL' || l === 'VIEW'

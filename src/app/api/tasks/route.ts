@@ -14,8 +14,10 @@ import {
   logActivity,
   notifyUsers,
 } from '@/lib/server/api'
-import { requireAccess } from '@/lib/server/access'
+import { requireAccess, getAccess } from '@/lib/server/access'
+import { visibleTaskWhere } from '@/lib/server/projects-access'
 import { getTaskColumns, doneKeys, statusOrderMap } from '@/lib/server/columns'
+import { recomputeProjectProgress, syncMilestoneStatus, taskWindowError } from '@/lib/server/task-flows'
 
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const
 
@@ -23,8 +25,8 @@ const taskInclude = Prisma.validator<Prisma.TaskInclude>()({
   project: { select: { id: true, name: true, color: true, status: true } },
   milestone: { select: { id: true, title: true } },
   subtasks: { select: { id: true, title: true, status: true, assigneeMembershipId: true } },
-  dependencies: { select: { dependsOnTask: { select: { id: true, title: true } } } },
-  dependents: { select: { task: { select: { id: true, title: true } } } },
+  dependencies: { select: { dependsOnTask: { select: { id: true, title: true, status: true } } } },
+  dependents: { select: { task: { select: { id: true, title: true, status: true } } } },
   _count: { select: { dependencies: true, comments: true } },
 })
 
@@ -107,7 +109,9 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
   const statusParam = url.searchParams.get('status')?.trim() || undefined
   const q = url.searchParams.get('q')?.trim() || undefined
   const view = url.searchParams.get('view')?.trim() || undefined
-  const limit = Math.max(1, Math.min(2000, optNum(url.searchParams.get('limit')) ?? 500))
+  // pagination: limit default 200 (hard cap 500), offset default 0
+  const limit = Math.max(1, Math.min(500, optNum(url.searchParams.get('limit')) ?? 200))
+  const offset = Math.max(0, optNum(url.searchParams.get('offset')) ?? 0)
 
   // self-service: own tasks never require module access (my-tasks module)
   const selfOnly = view === 'mine' || assigneeParam === 'me'
@@ -121,7 +125,14 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
   const notDoneKeys = doneKeys(columns)
   const orderMap = statusOrderMap(columns)
 
-  const where: Prisma.TaskWhereInput = { orgId: org.id }
+  // assignment scoping (projects-route pattern): tasks FULL → all org tasks;
+  // otherwise only tasks the caller can see (standalone, assigned/created by them,
+  // or inside projects they manage / are staffed on)
+  const access = await getAccess(ctx)
+  const tasksFull = membership.role === 'OWNER' || access['tasks'] === 'FULL'
+  const where: Prisma.TaskWhereInput = tasksFull
+    ? { orgId: org.id }
+    : visibleTaskWhere(org.id, membership.id, membership.role)
 
   if (projectIdParam) {
     const project = await db.project.findFirst({
@@ -163,13 +174,15 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
     return a.dueDate.getTime() - b.dueDate.getTime()
   })
 
-  const items = await enrichTasks(org.id, sorted.slice(0, limit))
+  const items = await enrichTasks(org.id, sorted.slice(offset, offset + limit))
   return ok({ items })
 })
 
-/** POST /api/tasks — create task (any org member) */
+/** POST /api/tasks — create task (tasks module view-minimum: VIEW roles can create, HIDDEN cannot) */
 export const POST = withAuth(async (req: NextRequest, ctx) => {
   const { membership, org } = requireOrg(ctx)
+  const denied = requireAccess(ctx, 'tasks', 'view')
+  if (denied) return denied
   const data = await body(req)
 
   const title = str(data.title, 'title', { max: 300 })
@@ -240,6 +253,15 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
 
   const startDate = optDate(data.startDate) ?? null
   const dueDate = optDate(data.dueDate) ?? null
+
+  // task date sanity: due can never precede start
+  if (startDate && dueDate && startOfDayVal(dueDate) < startOfDayVal(startDate)) {
+    return fail('Due date cannot be before the start date', 422)
+  }
+  // task dates must respect the project window (when the project defines one)
+  const windowError = await taskWindowError(projectId, startDate, dueDate)
+  if (windowError) return fail(windowError, 422)
+
   const estimatedHours = optNum(data.estimatedHours)
   const tags = data.tags ? str(data.tags, 'tags', { required: false, max: 500 }) : null
   const order = optNum(data.order)
@@ -289,6 +311,16 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
     })
   }
 
+  // keep the project↔task graph in sync: progress rollup + milestone auto-status
+  const doneStatuses = doneKeys(columns)
+  if (projectId) await recomputeProjectProgress(projectId, doneStatuses)
+  if (milestoneId) await syncMilestoneStatus(milestoneId, doneStatuses, {
+    orgId: org.id,
+    membershipId: membership.id,
+    userName: ctx.user.name,
+    userId: ctx.user.id,
+  })
+
   await logActivity({
     orgId: org.id,
     actorMembershipId: membership.id,
@@ -321,3 +353,8 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
   const [enriched] = await enrichTasks(org.id, [fresh ?? created])
   return ok(enriched, 201)
 })
+
+/** local-midnight value (task dates are whole days) */
+function startOfDayVal(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}

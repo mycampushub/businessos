@@ -54,6 +54,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       newStageName = st.name
     }
 
+    // optional linked project (Deal.projectId — delivery hand-off after won)
+    let projectId: string | null | undefined
+    if (b.projectId !== undefined) {
+      if (b.projectId === null || b.projectId === '') {
+        projectId = null
+      } else {
+        const pr = await db.project.findFirst({ where: { id: String(b.projectId).trim(), orgId: org.id }, select: { id: true } })
+        if (!pr) return fail('Invalid projectId', 422)
+        projectId = pr.id
+      }
+    }
+
     const isWon = status === 'WON'
     const isLost = status === 'LOST'
 
@@ -97,6 +109,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         ...(companyId !== undefined && { companyId }),
         ...(contactId !== undefined && { contactId }),
         ...(stageId !== undefined && { stageId }),
+        ...(projectId !== undefined && { projectId }),
         ...(clientId !== undefined && { clientId }),
         ...(isWon && { wonAt: new Date(), probability: 100 }),
         ...(isLost && { probability: 0 }),
@@ -157,7 +170,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (
       !logged &&
       (name !== undefined || value !== undefined || probability !== undefined || expectedCloseDate !== undefined ||
-        notes !== undefined || status !== undefined || companyId !== undefined || contactId !== undefined || stageId !== undefined)
+        notes !== undefined || status !== undefined || companyId !== undefined || contactId !== undefined || stageId !== undefined || projectId !== undefined)
     ) {
       await logActivity({
         orgId: org.id,

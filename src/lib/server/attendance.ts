@@ -1,29 +1,30 @@
 import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
+import { DEFAULT_TZ, localDateKey, zonedTime, minutesSinceZonedMidnight, zonedWeekday } from './tz'
 
 // ---------- T3-b shared attendance helpers (multi-session) ----------
 // Used by: /api/hr/attendance (GET/POST), check-in, check-out, /api/my/day, /api/hr/leave/[id].
 // SESSION shape (frozen T3 contract):
 //   { id, checkIn, checkOut, minutes, note, entries: [{ id, taskId, taskTitle, minutes, note }] }
 
-/** local (server timezone) YYYY-MM-DD string */
-export function localDate(d = new Date()): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+/** org-timezone YYYY-MM-DD string (server runs UTC — pass Org.timezone, default Asia/Dhaka) */
+export function localDate(d = new Date(), tz: string = DEFAULT_TZ): string {
+  return localDateKey(d, tz)
 }
 
-/** local HH:MM */
-export function localTime(d = new Date()): string {
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+/** org-local HH:MM */
+export function localTime(d = new Date(), tz: string = DEFAULT_TZ): string {
+  return zonedTime(d, tz)
 }
 
-/** minutes since local midnight */
-export function minutesOfDay(d: Date): number {
-  return d.getHours() * 60 + d.getMinutes()
+/** minutes since org-local midnight */
+export function minutesOfDay(d: Date, tz: string = DEFAULT_TZ): number {
+  return minutesSinceZonedMidnight(d, tz)
 }
 
-/** weekday number 1=Mon..7=Sun (local) */
-export function weekdayOf(d: Date): number {
-  return ((d.getDay() + 6) % 7) + 1
+/** weekday number 1=Mon..7=Sun (org timezone) */
+export function weekdayOf(d: Date, tz: string = DEFAULT_TZ): number {
+  return zonedWeekday(d, tz)
 }
 
 // ---------- session mapping ----------
@@ -108,6 +109,39 @@ export async function computeAggregates(attendanceId: string): Promise<{
     if (s.checkOut) workedMinutes += s.minutes ?? 0
   }
   return { checkIn, checkOut, workedMinutes }
+}
+
+// ---------- F1 day-status derivation (earliest session wins) ----------
+// PRESENT vs LATE derives from the day's EARLIEST session check-in compared against
+// policy.checkInTime + lateGraceMins in the ORG timezone — never from the current clock,
+// so a later re-check-in can never flip an on-time day to LATE. Off-day work is PRESENT.
+
+/** PRESENT vs LATE from the earliest check-in vs the cutoff (org-tz wall-clock minutes). */
+export function baseDayStatus(
+  earliestCheckIn: Date | null,
+  isWorkDay: boolean,
+  cutoffMinutes: number,
+  tz: string,
+): 'PRESENT' | 'LATE' {
+  if (!earliestCheckIn) return 'PRESENT'
+  return !isWorkDay || minutesSinceZonedMidnight(earliestCheckIn, tz) <= cutoffMinutes ? 'PRESENT' : 'LATE'
+}
+
+/**
+ * Final status once a session closes: the earliest check-in fixes PRESENT vs LATE;
+ * total worked minutes (Σ closed sessions) < halfDayMins → HALF_DAY, while
+ * ≥ halfDayMins upgrades an earlier HALF_DAY back to PRESENT/LATE.
+ */
+export function finalDayStatus(args: {
+  earliestCheckIn: Date | null
+  workedMinutes: number
+  isWorkDay: boolean
+  cutoffMinutes: number
+  halfDayMins: number
+  tz: string
+}): 'PRESENT' | 'LATE' | 'HALF_DAY' {
+  if (args.workedMinutes > 0 && args.workedMinutes < args.halfDayMins) return 'HALF_DAY'
+  return baseDayStatus(args.earliestCheckIn, args.isWorkDay, args.cutoffMinutes, args.tz)
 }
 
 /** check-in / check-out response shape (frozen T3 contract):

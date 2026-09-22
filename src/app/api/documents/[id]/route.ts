@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { deleteObject } from '@/lib/server/storage'
 
 type RouteParams = { params: Promise<{ id: string }> }
 
@@ -15,7 +16,7 @@ export async function DELETE(req: NextRequest, route: RouteParams): Promise<Next
 
     const document = await db.document.findFirst({
       where: { id, orgId: org.id },
-      select: { id: true, name: true, folder: true, uploadedById: true },
+      select: { id: true, name: true, folder: true, uploadedById: true, storageKey: true },
     })
     if (!document) return fail('Document not found', 404)
 
@@ -24,6 +25,9 @@ export async function DELETE(req: NextRequest, route: RouteParams): Promise<Next
     }
 
     await db.document.delete({ where: { id: document.id } })
+
+    // best-effort object cleanup (local disk / R2) — never throws
+    await deleteObject(document.storageKey)
 
     await logActivity({
       orgId: org.id,

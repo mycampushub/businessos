@@ -2,13 +2,17 @@
 // Math follows the T3-a worklog "payslip counting rules" exactly:
 //   base = membership.baseSalary ?? 0
 //   allowances = Σ ALLOWANCE SalaryComponents · fixedDeductions = Σ DEDUCTION SalaryComponents
-//   unpaidLeaveDays = days of APPROVED LeaveRequests (leaveType.paid=false) overlapping the period,
-//                     counted in [max(startDate, periodStart), min(endDate, periodEnd)]
+//   unpaidLeaveDays = work days (policy) minus org holidays of APPROVED LeaveRequests
+//                     (leaveType.paid=false) overlapping the period, clipped to the
+//                     period bounds — same semantics as LeaveRequest.days, so
+//                     weekends/holidays are never deducted twice.
 //   unpaidLeaveAmount = Math.round(base / 30 × unpaidLeaveDays)  (integer, matches seed)
 //   gross = base + allowances · net = max(0, gross − fixedDeductions − unpaidLeaveAmount)
 //   presentDays counts PRESENT (+ HALF_DAY), lateDays LATE, absentDays ABSENT (LEAVE/HOLIDAY skipped)
 import { db } from '@/lib/db'
-import { getOrgPolicy } from '@/lib/server/policy'
+import { getOrgPolicy, parseWorkDays } from '@/lib/server/policy'
+import { storedDateKey } from '@/lib/server/tz'
+import { holidayDateKeys, chargeableDaysBetweenKeys } from '@/lib/server/holidays'
 
 // ---------- money ----------
 
@@ -179,23 +183,35 @@ export interface PayslipComputed {
   breakdown: string
 }
 
-/** Unpaid-leave day counts per membership for a "YYYY-MM" period (clipped to the month). */
+/**
+ * Unpaid-leave day counts per membership for a "YYYY-MM" period.
+ * F1: counts WORK days (policy workDays) minus org holidays inside
+ * [max(leaveStart, periodStart), min(leaveEnd, periodEnd)] — mirroring
+ * LeaveRequest.days semantics. A request spanning period edges contributes only
+ * its in-period work days; weekends and holidays are never charged. All bounds
+ * are calendar date keys (storedDateKey convention) — no server-locale math.
+ */
 export function unpaidLeaveDaysFor(
   period: string,
   approvedLeaves: Array<{ membershipId: string; startDate: Date; endDate: Date; leaveType: { paid: boolean } }>,
+  workDays: number[],
+  holidayKeys: Set<string>,
 ): Map<string, number> {
   const year = parseInt(period.slice(0, 4), 10)
   const month = parseInt(period.slice(5, 7), 10) // 1..12
-  const periodStart = new Date(year, month - 1, 1).getTime()
-  const periodEnd = new Date(year, month, 0, 23, 59, 59, 999).getTime() // last day of the month
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate() // day 0 of next month = last day
+  const periodStart = `${period}-01`
+  const periodEnd = `${period}-${String(daysInMonth).padStart(2, '0')}`
   const map = new Map<string, number>()
   for (const lr of approvedLeaves) {
     if (lr.leaveType.paid) continue
-    const start = Math.max(lr.startDate.getTime(), periodStart)
-    const end = Math.min(lr.endDate.getTime(), periodEnd)
-    if (end < start) continue // no overlap with the period
-    const days = Math.floor((end - start) / 86_400_000) + 1
-    map.set(lr.membershipId, (map.get(lr.membershipId) ?? 0) + days)
+    const start = storedDateKey(lr.startDate)
+    const end = storedDateKey(lr.endDate)
+    const clippedStart = start > periodStart ? start : periodStart
+    const clippedEnd = end < periodEnd ? end : periodEnd
+    if (clippedEnd < clippedStart) continue // no overlap with the period
+    const days = chargeableDaysBetweenKeys(clippedStart, clippedEnd, workDays, holidayKeys)
+    if (days > 0) map.set(lr.membershipId, (map.get(lr.membershipId) ?? 0) + days)
   }
   return map
 }
@@ -281,6 +297,14 @@ export async function buildPayslipRows(orgId: string, period: string): Promise<P
     where: { orgId, status: 'ACTIVE' },
     include: { salaryComponents: { orderBy: { createdAt: 'asc' } } },
   })
+  // F1: period clipping + day counting happen in pure calendar-key space
+  // (policy work days, org holidays, stored whole-day leave bounds).
+  const [policy, orgHolidays] = await Promise.all([
+    getOrgPolicy(orgId),
+    db.holiday.findMany({ where: { orgId }, select: { startDate: true, endDate: true } }),
+  ])
+  const workDays = parseWorkDays(policy.workDays)
+  const holidayKeys = holidayDateKeys(orgHolidays)
   // Attendance rows of the period — fetched org-wide and filtered in JS (SQLite-safe prefix compare)
   const periodAttendance = (
     await db.attendance.findMany({
@@ -292,9 +316,8 @@ export async function buildPayslipRows(orgId: string, period: string): Promise<P
     where: { orgId, status: 'APPROVED' },
     include: { leaveType: { select: { paid: true } } },
   })
-  const unpaidDays = unpaidLeaveDaysFor(period, approvedLeaves)
+  const unpaidDays = unpaidLeaveDaysFor(period, approvedLeaves, workDays, holidayKeys)
   // T5: late-arrival penalty policy (OrgPolicy) feeds the payslip deduction
-  const policy = await getOrgPolicy(orgId)
   const latePenalty = {
     enabled: policy.latePenaltyEnabled,
     threshold: policy.latePenaltyThreshold,

@@ -6,7 +6,7 @@
  * selected via nav.params.projectId deep-links from the portfolio.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { addDays } from 'date-fns'
 import { api, useData } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
@@ -516,6 +516,7 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
 
   const [msForm, setMsForm] = useState({ title: '', description: '', dueDate: '' })
   const [msOpen, setMsOpen] = useState(false)
+  const [msEdit, setMsEdit] = useState<{ id: string; title: string; description: string; dueDate: string; status: string } | null>(null)
 
   const [taskForm, setTaskForm] = useState({
     title: '', assignee: 'none', milestone: 'none', priority: 'MEDIUM', dueDate: '',
@@ -609,16 +610,51 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
     return items
   }, [p, projectTasks, doneKeys, colItems])
 
+  // dependency link types (FS/SS/FF/SF) for the gantt connectors — fetched once
+  // (in parallel) for the tasks that actually have dependencies
+  const [depTypes, setDepTypes] = useState<Record<string, string>>({})
+  const depTaskKey = useMemo(
+    () => projectTasks.filter((t) => (t.dependsOn?.length ?? 0) > 0).map((t) => t.id).join(','),
+    [projectTasks]
+  )
+  useEffect(() => {
+    const ids = depTaskKey.split(',').filter(Boolean)
+    if (!ids.length) {
+      setDepTypes({})
+      return
+    }
+    let cancelled = false
+    void Promise.all(ids.map(async (id) => {
+      try {
+        const res = await api<{ dependencies: Array<{ dependsOnTaskId: string; type: string }> }>(
+          `/api/tasks/${id}/dependencies`,
+          { silent: true }
+        )
+        return res.dependencies.map((d) => [`${id}:${d.dependsOnTaskId}`, d.type] as const)
+      } catch {
+        return [] as Array<readonly [string, string]>
+      }
+    })).then((rows) => {
+      if (!cancelled) setDepTypes(Object.fromEntries(rows.flat()))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [depTaskKey])
+
   const ganttLinks = useMemo(() => {
     const links: GanttLink[] = []
     const taskIds = new Set(projectTasks.map((t) => t.id))
     for (const t of projectTasks) {
       for (const dep of t.dependsOn ?? []) {
-        if (taskIds.has(dep.id)) links.push({ fromId: `t-${dep.id}`, toId: `t-${t.id}` })
+        if (taskIds.has(dep.id)) {
+          // link type (FS/SS/FF/SF) rides on the gantt connector label
+          links.push({ fromId: `t-${dep.id}`, toId: `t-${t.id}`, type: depTypes[`${t.id}:${dep.id}`] })
+        }
       }
     }
     return links
-  }, [projectTasks])
+  }, [projectTasks, depTypes])
 
   function openDetailTask(t: TaskItem) {
     setDialogTask(t)
@@ -758,6 +794,33 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
       toast({ title: msg })
       detail.refresh()
     } catch { /* api() toasts */ }
+  }
+
+  function openMsEdit(m: MilestoneItem) {
+    setMsEdit({
+      id: m.id,
+      title: m.title,
+      description: m.description ?? '',
+      dueDate: m.dueDate ? m.dueDate.slice(0, 10) : '',
+      status: m.status,
+    })
+  }
+
+  async function saveMsEdit() {
+    if (!msEdit || !msEdit.title.trim()) return
+    const current = p?.milestones.find((x) => x.id === msEdit.id)
+    const body: Record<string, unknown> = {
+      title: msEdit.title.trim(),
+      status: msEdit.status, // DELAYED finally reachable from the UI
+    }
+    if (msEdit.description.trim() !== (current?.description ?? '')) {
+      body.description = msEdit.description.trim() || null
+    }
+    if (msEdit.dueDate !== (current?.dueDate ? current.dueDate.slice(0, 10) : '')) {
+      body.dueDate = msEdit.dueDate || null
+    }
+    await patchMilestone(msEdit.id, body, 'Milestone updated')
+    setMsEdit(null)
   }
 
   async function deleteMilestone(id: string) {
@@ -1216,6 +1279,11 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
                           </div>
                           <div className="flex items-center gap-1">
                             {canManage && (
+                              <Button variant="ghost" size="icon" className="size-9" onClick={() => openMsEdit(m)} aria-label={`Edit ${m.title}`}>
+                                <Pencil className="size-4" aria-hidden />
+                              </Button>
+                            )}
+                            {canManage && (
                               <Select value={m.status} onValueChange={(v) => patchMilestone(m.id, { status: v }, 'Milestone updated')}>
                                 <SelectTrigger className="h-9 w-36 text-xs" aria-label={`Status of ${m.title}`}><SelectValue /></SelectTrigger>
                                 <SelectContent>
@@ -1582,6 +1650,70 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
             <Button variant="ghost" className="h-11" onClick={() => setTaskOpen(false)}>Cancel</Button>
             <Button className="h-11" disabled={saving || !taskForm.title.trim()} onClick={addTask}>
               {saving ? 'Adding…' : 'Add task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* edit milestone dialog (title / description / due date / status incl. DELAYED) */}
+      <Dialog open={!!msEdit} onOpenChange={(o) => { if (!o) setMsEdit(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit milestone</DialogTitle>
+            <DialogDescription>Update the checkpoint details.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="ms-edit-title">Title *</Label>
+              <Input
+                id="ms-edit-title"
+                value={msEdit?.title ?? ''}
+                className="h-11"
+                onChange={(e) => setMsEdit((f) => (f ? { ...f, title: e.target.value } : f))}
+                placeholder="e.g. Public beta launch"
+                autoFocus
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="ms-edit-desc">Description</Label>
+              <Textarea
+                id="ms-edit-desc"
+                value={msEdit?.description ?? ''}
+                rows={2}
+                onChange={(e) => setMsEdit((f) => (f ? { ...f, description: e.target.value } : f))}
+              />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ms-edit-due">Due date</Label>
+                <Input
+                  id="ms-edit-due"
+                  type="date"
+                  value={msEdit?.dueDate ?? ''}
+                  className="h-11"
+                  onChange={(e) => setMsEdit((f) => (f ? { ...f, dueDate: e.target.value } : f))}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="ms-edit-status">Status</Label>
+                <Select
+                  value={msEdit?.status ?? 'PENDING'}
+                  onValueChange={(v) => setMsEdit((f) => (f ? { ...f, status: v } : f))}
+                >
+                  <SelectTrigger id="ms-edit-status" className="h-11"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Object.keys(MILESTONE_STATUS_LABELS).map((s) => (
+                      <SelectItem key={s} value={s}>{MILESTONE_STATUS_LABELS[s]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" className="h-11" onClick={() => setMsEdit(null)}>Cancel</Button>
+            <Button className="h-11" disabled={saving || !msEdit?.title.trim()} onClick={() => void saveMsEdit()}>
+              {saving ? 'Saving…' : 'Save changes'}
             </Button>
           </DialogFooter>
         </DialogContent>

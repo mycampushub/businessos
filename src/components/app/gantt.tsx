@@ -19,10 +19,12 @@ export interface GanttItem {
   completed?: boolean
 }
 
-/** Optional dependency connector: elbow from the END of `fromId`'s bar to the START of `toId`'s bar. */
+/** Optional dependency connector: elbow from the END of `fromId`'s bar to the START of `toId`'s bar.
+ *  `type` is the link type (FS finish-to-start / SS start-to-start / FF / SF) shown in the label. */
 export interface GanttLink {
   fromId: string
   toId: string
+  type?: string
 }
 
 /** Calendar range shaded on the timeline (public holidays etc.). */
@@ -249,7 +251,7 @@ export function GanttChart({
 
   // dependency connector elbows (from end of predecessor bar → start of successor bar)
   const linkMarks = useMemo(() => {
-    const marks: Array<{ d: string; arrow: string }> = []
+    const marks: Array<{ d: string; arrow: string; label: string }> = []
     if (!base || !links?.length) return marks
     const idxOf = (d: Date) => Math.round((startOfDay(d).getTime() - base.min.getTime()) / 86400000)
     const rowOf = new Map<string, number>()
@@ -274,6 +276,8 @@ export function GanttChart({
       marks.push({
         d: `M ${fromX} ${fromY} H ${midX} V ${toY} H ${Math.max(midX, toX - 8)}`,
         arrow: `M ${toX - 7} ${toY - 3.5} L ${toX - 1.5} ${toY} L ${toX - 7} ${toY + 3.5}`,
+        // accessible label — includes the link type when the caller provides it
+        label: `${from.name} → ${to.name}${l.type ? ` (${l.type})` : ''}`,
       })
     }
     return marks
@@ -559,7 +563,8 @@ export function GanttChart({
                   </div>
                 )
               })}
-              {/* dependency connectors */}
+              {/* dependency connectors — each path carries a <title> with the
+                  link label (names + type) for hover/AT; an sr-only list sits below */}
               {linkMarks.length > 0 && (
                 <svg
                   className="pointer-events-none absolute inset-0 text-muted-foreground/60"
@@ -571,11 +576,17 @@ export function GanttChart({
                 >
                   {linkMarks.map((m, i) => (
                     <g key={i}>
+                      <title>{m.label}</title>
                       <path d={m.d} stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" />
                       <path d={m.arrow} fill="currentColor" stroke="currentColor" strokeWidth={1} strokeLinejoin="round" />
                     </g>
                   ))}
                 </svg>
+              )}
+              {linkMarks.length > 0 && (
+                <span className="sr-only">
+                  Dependency links: {linkMarks.map((m) => m.label).join('; ')}
+                </span>
               )}
             </div>
           </div>

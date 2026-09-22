@@ -17,9 +17,8 @@ export const PLAN_SET = new Set<string>(PLANS)
 // ---------- platform audit rows ----------
 // Platform mutations write audit rows via db.auditLog.create directly (the audit() helper
 // is org-scoped): orgId = the AFFECTED org's id, actorMembershipId = null (no membership).
-// When the affected entity has NO org (e.g. an org-less user), the row is skipped —
-// AuditLog.orgId is required and inventing an org id would leak — and the action is
-// logged to the console instead (documented in worklog T4-b).
+// AuditLog.orgId is nullable: org-less platform actions (e.g. plan pricing changes)
+// are persisted with orgId = null so they appear in the console Audit tab.
 
 export async function platformAudit(opts: {
   orgId: string | null
@@ -29,14 +28,10 @@ export async function platformAudit(opts: {
   oldValues?: unknown
   newValues?: unknown
 }): Promise<void> {
-  if (!opts.orgId) {
-    console.log(`[platform-audit] (no org) ${opts.action} ${opts.entity} ${opts.entityId ?? ''}`)
-    return
-  }
   await db.auditLog
     .create({
       data: {
-        orgId: opts.orgId,
+        orgId: opts.orgId ?? null,
         actorMembershipId: null,
         action: opts.action,
         entity: opts.entity,

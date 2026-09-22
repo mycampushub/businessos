@@ -79,12 +79,21 @@ export async function POST(req: NextRequest) {
     const job = await db.job.findUnique({ where: { id: jobId } })
     if (!job) return fail('Job not found', 404)
     if (job.status !== 'OPEN') return fail('Job is not open', 400)
+    // only PUBLIC/PLATFORM jobs accept applications — PRIVATE jobs are internal-only
+    if (job.visibility === 'PRIVATE') return fail('Private jobs do not accept applications', 403)
 
     const opt = (v: unknown, max: number): string | null =>
       v === undefined || v === null ? null : String(v).trim().slice(0, max) || null
 
     const candidateName = opt(b.candidateName, 120) ?? ctx.user.name
     const email = opt(b.email, 160) ?? ctx.user.email
+
+    // duplicate guard: same email already has a live (non-rejected) application for this job
+    const dupe = await db.application.findFirst({
+      where: { jobId: job.id, email, stage: { not: 'REJECTED' } },
+      select: { id: true },
+    })
+    if (dupe) return fail('Already applied', 409)
 
     const created = await db.application.create({
       data: {

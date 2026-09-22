@@ -20,8 +20,7 @@ import {
   LayoutDashboard, KanbanSquare, FolderKanban, CheckSquare, Target, Users, UserRound,
   CalendarCheck2, CalendarDays, Network, Briefcase, UserRoundSearch, Receipt, Wallet,
   FileText, Megaphone, Settings, UserRoundCog, PanelLeft, Building2, Plus, ChevronsUpDown,
-  BarChart3, LogOut, Sun, Banknote, ShieldCheck, Video,
-} from 'lucide-react'
+  BarChart3, LogOut, Sun, Banknote, ShieldCheck, Video, CreditCard } from 'lucide-react'
 
 interface NavItem {
   id: ModuleId
@@ -95,6 +94,7 @@ const NAV: NavGroup[] = [
     items: [
       { id: 'documents', label: 'Documents', icon: FileText },
       { id: 'announcements', label: 'Announcements', icon: Megaphone },
+      { id: 'billing', label: 'Billing & Plan', icon: CreditCard },
     ],
   },
 ]
@@ -196,10 +196,16 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const groups = useMemo(() => {
     if (orgless) return []
     // Render nav items only when the role can view the module; drop empty groups.
-    return NAV.map((g) => ({ ...g, items: g.items.filter((item) => canView(item.id)) })).filter(
-      (g) => g.items.length > 0
-    )
-  }, [canView, orgless])
+    // Billing & Plan is OWNER/ADMIN-only (it is not part of the access matrix).
+    return NAV.map((g) => ({
+      ...g,
+      items: g.items.filter(
+        (item) =>
+          canView(item.id) &&
+          (item.id !== 'billing' || role === 'OWNER' || role === 'ADMIN')
+      ),
+    })).filter((g) => g.items.length > 0)
+  }, [canView, orgless, role])
 
   return (
     <nav className="flex flex-1 flex-col gap-4 overflow-y-auto px-3 pb-4" aria-label="Main navigation">

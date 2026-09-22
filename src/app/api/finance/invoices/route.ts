@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, fail, withAuth, requireOrg, body, str, num, optNum, optDate, logActivity } from '@/lib/server/api'
+import { ok, fail, withAuth, requireOrg, requireRole, body, str, num, optNum, optDate, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { INVOICE_ROLES } from '@/lib/roles'
 
 type InvoiceItem = { description: string; qty: number; rate: number }
 
@@ -40,10 +41,13 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
     return ok({ items: invoices.map(mapInvoice) })
 })
 
+// POST /api/finance/invoices — create invoice (finance-invoices FULL + INVOICE_ROLES,
+// matching PATCH/DELETE on /api/finance/invoices/[id])
 export const POST = withAuth(async (req: NextRequest, ctx) => {
     const { membership, org } = requireOrg(ctx)
-    const denied = requireAccess(ctx, 'finance-invoices', 'view')
+    const denied = requireAccess(ctx, 'finance-invoices', 'full')
     if (denied) return denied
+    requireRole(ctx, [...INVOICE_ROLES])
     const b = await body(req)
 
     const number = str(b.number, 'number', { max: 60 })

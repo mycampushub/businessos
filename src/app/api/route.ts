@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { ok } from '@/lib/server/api'
 
+// GET /api — API identity/health endpoint (uniform ok envelope)
 export async function GET() {
-  return NextResponse.json({ message: "Hello, world!" });
+  return ok({ name: 'OrgOS API', version: 1 })
 }

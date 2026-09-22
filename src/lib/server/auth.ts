@@ -1,5 +1,5 @@
 import { randomUUID, scryptSync, timingSafeEqual } from 'crypto'
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
 import { db } from '@/lib/db'
 import { accessForUser, type AccessLevel } from './access'
 
@@ -29,8 +29,19 @@ export function verifyPassword(password: string, stored: string): boolean {
 
 // ---------- sessions ----------
 
+/** F3: cookie `secure` flag — set only when the request actually arrived over https
+ *  (reverse proxy sets x-forwarded-proto). Plain-http dev keeps working. */
+async function isSecureRequest(): Promise<boolean> {
+  try {
+    const h = await headers()
+    return (h.get('x-forwarded-proto') ?? '').trim().toLowerCase() === 'https'
+  } catch {
+    return false
+  }
+}
+
 export interface SessionInfo {
-  user: { id: string; email: string; name: string; avatarUrl: string | null; headline: string | null; phone: string | null; location: string | null; bio: string | null; skills: string | null; platformAdmin: boolean; status: string }
+  user: { id: string; email: string; name: string; avatarUrl: string | null; headline: string | null; phone: string | null; location: string | null; bio: string | null; skills: string | null; platformAdmin: boolean; status: string; /** F3: email verification + MFA state (ISO date string after JSON serialization) */ emailVerified: Date | null; mfaEnabled: boolean }
   memberships: Array<{
     id: string; role: string; title: string | null; orgId: string; status: string
     org: { id: string; name: string; slug: string; logoUrl: string | null; currency: string; plan: string; status: string }
@@ -54,6 +65,7 @@ export async function setSessionCookie(token: string) {
   jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
+    secure: await isSecureRequest(),
     path: '/',
     maxAge: SESSION_DAYS * 24 * 60 * 60,
   })
@@ -76,6 +88,7 @@ export async function setActiveOrgCookie(orgId: string) {
   jar.set(ACTIVE_ORG_COOKIE, orgId, {
     httpOnly: false,
     sameSite: 'lax',
+    secure: await isSecureRequest(),
     path: '/',
     maxAge: SESSION_DAYS * 24 * 60 * 60,
   })
@@ -93,6 +106,7 @@ export async function getSessionUser(): Promise<SessionInfo | null> {
         select: {
           id: true, email: true, name: true, avatarUrl: true, headline: true,
           phone: true, location: true, bio: true, skills: true, platformAdmin: true, status: true,
+          emailVerified: true, mfaEnabled: true,
         },
       },
     },

@@ -2,11 +2,14 @@
 
 /**
  * Platform administration — the SaaS owner console (org-less, module 'platform-admin').
- * Tabs: Overview (KPIs, plans, signup trend, recent lists) | Users (suspend/activate,
- * platform-admin grant/revoke, support sign-in) | Organizations | Jobs (moderation) |
- * Announcements (platform broadcast) | Audit. Every fetch is lazy per tab (subcomponents
- * mount only while their tab is active); every mutation is confirmed via AlertDialog and
- * toasts + refreshes. API shapes are frozen in the T4-b/T5-a worklog entries.
+ * Tabs: Overview (KPIs incl. MRR, plans, signup trend, recent lists) | Users
+ * (suspend/activate, platform-admin grant/revoke, support sign-in) | Organizations
+ * (tenant detail drill-down, suspend/activate) | Subscriptions (lifecycle) |
+ * Requests (tenant plan requests — payment confirmation) | Plans (catalog &
+ * pricing) | Jobs (moderation) | Announcements (platform broadcast) | Audit.
+ * Every fetch is lazy per tab (subcomponents mount only while their tab is
+ * active); every mutation is confirmed via AlertDialog and toasts + refreshes.
+ * API shapes are frozen in the T4-b/T5-a/T6-a worklog entries.
  */
 
 import { useEffect, useState } from 'react'
@@ -18,6 +21,11 @@ import { PageHeader, EmptyState } from '@/components/app/page-header'
 import { StatCard } from '@/components/app/stat-card'
 import { StatusBadge } from '@/components/app/status-badge'
 import { UserAvatar } from '@/components/app/user-avatar'
+import PlansTab from '@/components/views/platform/plans-tab'
+import SubscriptionsTab from '@/components/views/platform/subscriptions-tab'
+import BillingRequestsTab from '@/components/views/platform/billing-requests-tab'
+import OrgDetailDialog from '@/components/views/platform/org-detail-dialog'
+import { fmtMoney } from '@/components/views/platform/money'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -37,7 +45,7 @@ import {
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   ShieldCheck, Users, Building2, Briefcase, FolderKanban, FileText, Video, Search, Trash2,
-  ShieldOff, History, Megaphone, LifeBuoy, LogIn,
+  ShieldOff, History, Megaphone, LifeBuoy, LogIn, Eye, CreditCard, Tags,
 } from 'lucide-react'
 
 // ---------- local types (T4-b exact response shapes) ----------
@@ -104,6 +112,8 @@ interface OverviewData {
     openJobs: number; totalJobs: number
     projects: number; tasks: number; documents: number
     storageBytes: number; meetings: number; activeSessions: number
+    activeSubscriptions: number; trialingSubscriptions: number
+    mrr: number; arr: number
   }
   plans: Array<{ plan: string; count: number }>
   recentUsers: Array<{ id: string; name: string; email: string; avatarUrl: string | null; status: string; platformAdmin: boolean; createdAt: string }>
@@ -112,8 +122,6 @@ interface OverviewData {
 }
 
 // ---------- vocab / helpers ----------
-
-const PLANS = ['Free', 'Starter', 'Growth', 'Business', 'Enterprise'] as const
 
 const JOB_STATUS_TONE: Record<string, BadgeTone> = { OPEN: 'info', PAUSED: 'warning', CLOSED: 'muted' }
 const VISIBILITY_TONE: Record<string, BadgeTone> = { PUBLIC: 'success', PLATFORM: 'secondary', PRIVATE: 'outline' }
@@ -204,7 +212,7 @@ function OverviewTab() {
     return (
       <div className="flex flex-col gap-4 sm:gap-6">
         <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
-          {Array.from({ length: 7 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
+          {Array.from({ length: 9 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
         </div>
         <div className="grid gap-4 sm:gap-6 lg:grid-cols-2">
           <Skeleton className="h-56 rounded-xl" />
@@ -223,8 +231,10 @@ function OverviewTab() {
 
   return (
     <div className="flex flex-col gap-4 sm:gap-6">
-      {/* KPI row — 7 cards reflow as 4+3 from md up */}
+      {/* KPI row — 9 cards reflow as 4+4+1 from md up */}
       <section aria-label="Platform KPIs" className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
+        <StatCard label="MRR" value={fmtMoney(k.mrr)} sub={`ARR ${fmtMoney(k.arr)}`} tone="success" icon={CreditCard} />
+        <StatCard label="Subscriptions" value={k.activeSubscriptions} sub={`${k.trialingSubscriptions} trialing`} tone="info" icon={Tags} />
         <StatCard label="Users" value={k.users} sub={`${k.activeUsers} active · ${k.suspendedUsers} suspended`} tone="info" icon={Users} />
         <StatCard label="Organizations" value={k.orgs} sub={`${k.activeOrgs} active`} tone="success" icon={Building2} />
         <StatCard label="Open jobs" value={k.openJobs} sub={`${k.totalJobs} total`} icon={Briefcase} />
@@ -659,7 +669,7 @@ function OrgsTab() {
   const path = debouncedQ ? `/api/platform/orgs?q=${encodeURIComponent(debouncedQ)}` : '/api/platform/orgs'
   const { data, loading, error, refresh } = useData<{ items: OrgItem[] }>(path)
   const [confirming, setConfirming] = useState<OrgItem | null>(null)
-  const [planChange, setPlanChange] = useState<{ org: OrgItem; plan: string } | null>(null)
+  const [detailId, setDetailId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const items = data?.items ?? []
@@ -679,23 +689,6 @@ function OrgsTab() {
       }
       refresh()
       setConfirming(null)
-    } catch {
-      // api() toasts
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  async function applyPlan() {
-    if (!planChange) return
-    setBusyId(planChange.org.id)
-    try {
-      const updated = await api<OrgItem>(`/api/platform/orgs/${planChange.org.id}`, {
-        method: 'PATCH', body: { plan: planChange.plan },
-      })
-      toast({ title: 'Plan changed', description: `${updated.name} is now on the ${updated.plan} plan. The owner was notified.` })
-      refresh()
-      setPlanChange(null)
     } catch {
       // api() toasts
     } finally {
@@ -742,7 +735,6 @@ function OrgsTab() {
             <TableBody>
               {items.map((org) => {
                 const suspended = org.status === 'SUSPENDED'
-                const busy = busyId === org.id
                 return (
                   <TableRow key={org.id} className={suspended ? 'opacity-75' : undefined}>
                     <TableCell>
@@ -763,27 +755,16 @@ function OrgsTab() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {busy ? (
-                        <span className="text-sm text-muted-foreground">{org.plan}</span>
-                      ) : (
-                        <Select
-                          value={org.plan}
-                          onValueChange={(plan) => plan !== org.plan && setPlanChange({ org, plan })}
-                        >
-                          <SelectTrigger
-                            aria-label={`Plan for ${org.name}`}
-                            className="h-9 w-32"
-                            disabled={suspended}
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {PLANS.map((p) => (
-                              <SelectItem key={p} value={p}>{p}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
+                      <Badge
+                        variant="outline"
+                        className={
+                          org.plan === 'Free'
+                            ? 'bg-muted text-muted-foreground'
+                            : 'border-teal-600/25 bg-teal-600/12 font-medium text-teal-700 dark:border-teal-500/30 dark:bg-teal-500/15 dark:text-teal-400'
+                        }
+                      >
+                        {org.plan}
+                      </Badge>
                     </TableCell>
                     <TableCell className="text-right text-sm tabular-nums">{org.memberCount}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{org.ownerName ?? '—'}</TableCell>
@@ -794,21 +775,33 @@ function OrgsTab() {
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{fmtDate(org.createdAt)}</TableCell>
                     <TableCell className="text-right">
-                      {suspended ? (
-                        <Button variant="outline" size="sm" className="min-h-9" onClick={() => setConfirming(org)} aria-label={`Reactivate ${org.name}`}>
-                          <ShieldCheck className="size-3.5" aria-hidden /> Activate
-                        </Button>
-                      ) : (
+                      <div className="flex items-center justify-end gap-1">
                         <Button
                           variant="ghost"
-                          size="sm"
-                          className="min-h-9 text-rose-600 hover:bg-rose-500/10 hover:text-rose-600 dark:text-rose-400 dark:hover:bg-rose-500/15"
-                          onClick={() => setConfirming(org)}
-                          aria-label={`Suspend ${org.name}`}
+                          size="icon"
+                          className="size-9 min-h-9 text-sky-600 hover:bg-sky-500/10 hover:text-sky-700 dark:text-sky-400 dark:hover:bg-sky-500/15"
+                          title="Tenant detail"
+                          onClick={() => setDetailId(org.id)}
+                          aria-label={`Open the tenant detail for ${org.name}`}
                         >
-                          <ShieldOff className="size-3.5" aria-hidden /> Suspend
+                          <Eye className="size-4" aria-hidden />
                         </Button>
-                      )}
+                        {suspended ? (
+                          <Button variant="outline" size="sm" className="min-h-9" onClick={() => setConfirming(org)} aria-label={`Reactivate ${org.name}`}>
+                            <ShieldCheck className="size-3.5" aria-hidden /> Activate
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="min-h-9 text-rose-600 hover:bg-rose-500/10 hover:text-rose-600 dark:text-rose-400 dark:hover:bg-rose-500/15"
+                            onClick={() => setConfirming(org)}
+                            aria-label={`Suspend ${org.name}`}
+                          >
+                            <ShieldOff className="size-3.5" aria-hidden /> Suspend
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 )
@@ -852,30 +845,18 @@ function OrgsTab() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* plan change confirmation */}
-      <AlertDialog open={!!planChange} onOpenChange={(o) => { if (!o) setPlanChange(null) }}>
-        <AlertDialogContent>
-          {planChange && (
-            <>
-              <AlertDialogHeader>
-                <AlertDialogTitle>
-                  Change {planChange.org.name} to {planChange.plan}?
-                </AlertDialogTitle>
-                <AlertDialogDescription>
-                  The subscription plan switches from {planChange.org.plan} to {planChange.plan} and the
-                  organization owner is notified.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={() => void applyPlan()} disabled={busyId !== null}>
-                  Change plan
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </>
-          )}
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* tenant detail drill-down — usage, members, subscription, audit */}
+      <OrgDetailDialog
+        orgId={detailId}
+        open={detailId !== null}
+        onOpenChange={(o) => { if (!o) setDetailId(null) }}
+        onChanged={refresh}
+      />
+
+      <p className="text-xs text-muted-foreground">
+        Open a tenant’s detail to manage its subscription, review usage and members, or suspend it. Plan and
+        billing changes are managed in the Subscriptions tab.
+      </p>
     </div>
   )
 }
@@ -1225,7 +1206,7 @@ export default function PlatformAdminView() {
   if (!me?.user.platformAdmin) {
     return (
       <div className="flex flex-col gap-6">
-        <PageHeader icon={ShieldCheck} title="Platform administration" description="SaaS owner console — users, organizations, moderation and audit." />
+        <PageHeader icon={ShieldCheck} title="Platform administration" description="SaaS owner console — organizations, subscriptions, plans, moderation and audit." />
         <EmptyState
           icon={ShieldCheck}
           title="You do not have access to the platform console"
@@ -1240,7 +1221,7 @@ export default function PlatformAdminView() {
       <PageHeader
         icon={ShieldCheck}
         title="Platform administration"
-        description="SaaS owner console — users, organizations, moderation and audit."
+        description="SaaS owner console — organizations, subscriptions, plans, moderation and audit."
       />
 
       <Tabs defaultValue="overview">
@@ -1248,6 +1229,9 @@ export default function PlatformAdminView() {
           <TabsTrigger value="overview" className="gap-1.5 px-4">Overview</TabsTrigger>
           <TabsTrigger value="users" className="gap-1.5 px-4">Users</TabsTrigger>
           <TabsTrigger value="orgs" className="gap-1.5 px-4">Organizations</TabsTrigger>
+          <TabsTrigger value="subscriptions" className="gap-1.5 px-4">Subscriptions</TabsTrigger>
+          <TabsTrigger value="requests" className="gap-1.5 px-4">Requests</TabsTrigger>
+          <TabsTrigger value="plans" className="gap-1.5 px-4">Plans</TabsTrigger>
           <TabsTrigger value="jobs" className="gap-1.5 px-4">Jobs</TabsTrigger>
           <TabsTrigger value="announcements" className="gap-1.5 px-4">Announcements</TabsTrigger>
           <TabsTrigger value="audit" className="gap-1.5 px-4">Audit</TabsTrigger>
@@ -1255,6 +1239,9 @@ export default function PlatformAdminView() {
         <TabsContent value="overview" className="mt-4"><OverviewTab /></TabsContent>
         <TabsContent value="users" className="mt-4"><UsersTab /></TabsContent>
         <TabsContent value="orgs" className="mt-4"><OrgsTab /></TabsContent>
+        <TabsContent value="subscriptions" className="mt-4"><SubscriptionsTab /></TabsContent>
+        <TabsContent value="requests" className="mt-4"><BillingRequestsTab /></TabsContent>
+        <TabsContent value="plans" className="mt-4"><PlansTab /></TabsContent>
         <TabsContent value="jobs" className="mt-4"><JobsTab /></TabsContent>
         <TabsContent value="announcements" className="mt-4"><AnnouncementsTab /></TabsContent>
         <TabsContent value="audit" className="mt-4"><AuditTab /></TabsContent>

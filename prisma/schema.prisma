@@ -27,6 +27,9 @@ model User {
   phone         String?
   skills        String? // CSV
   emailVerified DateTime?
+  emailVerifyToken String? // uuid — email verification (no SMTP yet: surfaced in Settings → Security)
+  mfaSecret     String? // base32 TOTP secret
+  mfaEnabled    Boolean   @default(false)
   platformAdmin Boolean   @default(false) // SaaS platform administrator (org-less console)
   status        String    @default("ACTIVE") // ACTIVE | SUSPENDED (platform moderation)
   createdAt     DateTime  @default(now())
@@ -45,6 +48,8 @@ model Session {
   expiresAt      DateTime
   impersonatedBy String? // platform admin userId when this is a support (impersonation) session
   createdAt      DateTime @default(now())
+
+@@index([expiresAt])
 }
 
 // ============ ORGANIZATION (tenant) ============
@@ -101,6 +106,71 @@ model Organization {
   boardColumns       BoardColumn[]
   payrollRuns        PayrollRun[]
   salaryComponents   SalaryComponent[]
+
+  // SaaS platform billing (T6)
+  subscriptions      Subscription[]
+  billingRequests    BillingRequest[]
+}
+
+// ============ SAAS PLATFORM BILLING (T6) ============
+
+model Plan {
+  id           String         @id @default(cuid())
+  code         String         @unique // FREE | STARTER | GROWTH | BUSINESS | ENTERPRISE
+  name         String
+  description  String?
+  priceMonthly Float          @default(0) // org currency (BDT)
+  priceYearly  Float          @default(0)
+  currency     String         @default("BDT")
+  seatLimit    Int            @default(5)
+  projectLimit Int            @default(3)
+  storageGb    Int            @default(1)
+  features     String? // JSON array of feature labels
+  isActive     Boolean        @default(true)
+  sortOrder    Int            @default(0)
+  createdAt    DateTime       @default(now())
+  subscriptions Subscription[]
+  billingRequests BillingRequest[]
+}
+
+// Tenant-initiated upgrade/renewal request (manual payment confirmation flow —
+// pluggable gateway point for Stripe/bKash/SSLCommerz later).
+model BillingRequest {
+  id            String       @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  planId        String
+  plan          Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  billingCycle  String       @default("MONTHLY") // MONTHLY | YEARLY
+  seats         Int          @default(5)
+  amount        Float        @default(0) // payment due for the period (org currency)
+  note          String? // tenant note — e.g. transaction id / reference
+  status        String       @default("PENDING") // PENDING | APPROVED | REJECTED
+  requestedById String?
+  requestedBy   Membership?  @relation("BillingRequestBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedAt     DateTime?
+  createdAt     DateTime     @default(now())
+
+  @@index([orgId, status])
+}
+
+model Subscription {
+  id                 String       @id @default(cuid())
+  orgId              String
+  org                Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  planId             String
+  plan               Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  billingCycle       String       @default("MONTHLY") // MONTHLY | YEARLY
+  status             String       @default("ACTIVE") // TRIALING | ACTIVE | PAST_DUE | CANCELLED | EXPIRED
+  seats              Int          @default(5)
+  amountMonthly      Float        @default(0) // normalized monthly amount, org currency
+  startedAt          DateTime     @default(now())
+  currentPeriodStart DateTime     @default(now())
+  currentPeriodEnd   DateTime
+  cancelledAt        DateTime?
+  createdAt          DateTime     @default(now())
+
+@@index([orgId])
 }
 
 model Membership {
@@ -136,6 +206,7 @@ model Membership {
   meetings       Meeting[]
   applications   Application[]   @relation("ApplicationProcessor")
   expenses       Expense[]
+  billingRequests BillingRequest[] @relation("BillingRequestBy")
 
   // T3 additions
   attendanceSessions  AttendanceSession[]
@@ -210,6 +281,8 @@ model Project {
   projectMembers ProjectMember[]
   documents      Document[]
   meetings       Meeting[]
+
+  @@index([orgId, status])
 }
 
 model ProjectMember {
@@ -267,6 +340,10 @@ model Task {
   comments     Comment[]
   timeEntries  TimeEntry[]
   sessionEntries SessionTaskEntry[] // T3
+
+@@index([orgId, projectId])
+@@index([orgId, assigneeMembershipId])
+@@index([orgId, status])
 }
 
 model TaskDependency {
@@ -276,6 +353,8 @@ model TaskDependency {
   dependsOnTaskId String
   dependsOnTask   Task   @relation("TaskDepTo", fields: [dependsOnTaskId], references: [id], onDelete: Cascade)
   type            String @default("FS") // FS | SS | FF | SF
+
+@@unique([taskId, dependsOnTaskId])
 }
 
 model TimeEntry {
@@ -301,6 +380,9 @@ model Comment {
   createdAt          DateTime     @default(now())
   task               Task?        @relation(fields: [taskId], references: [id])
   taskId             String?
+
+@@index([orgId, entityType, entityId])
+@@index([taskId])
 }
 
 model Meeting {
@@ -318,6 +400,8 @@ model Meeting {
   createdBy             Membership?  @relation(fields: [createdByMembershipId], references: [id], onDelete: SetNull)
   participants          String? // CSV of membership ids
   createdAt             DateTime     @default(now())
+
+@@index([orgId, startsAt])
 }
 
 // ============ CRM ============
@@ -336,6 +420,8 @@ model Company {
   contacts Contact[]
   deals    Deal[]
   clients  Client[]
+
+@@index([orgId])
 }
 
 model Contact {
@@ -351,6 +437,8 @@ model Contact {
   notes     String?
   createdAt DateTime     @default(now())
   deals     Deal[]
+
+@@index([orgId])
 }
 
 model Client {
@@ -368,6 +456,8 @@ model Client {
 
   projects Project[]
   invoices Invoice[]
+
+@@index([orgId])
 }
 
 model Lead {
@@ -386,6 +476,8 @@ model Lead {
   ownerMembershipId  String?
   convertedCompanyId String?
   createdAt          DateTime     @default(now())
+
+@@index([orgId])
 }
 
 model PipelineStage {
@@ -420,6 +512,8 @@ model Deal {
   notes             String?
   wonAt             DateTime?
   createdAt         DateTime      @default(now())
+
+@@index([orgId])
 }
 
 model CrmActivity {
@@ -436,6 +530,8 @@ model CrmActivity {
   createdById String? // membership id
   createdBy   Membership?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime     @default(now())
+
+@@index([orgId, entityId])
 }
 
 // ============ RECRUITMENT (ATS) ============
@@ -489,6 +585,9 @@ model Application {
   processor               Membership? @relation("ApplicationProcessor", fields: [processedByMembershipId], references: [id], onDelete: SetNull)
   createdAt               DateTime    @default(now())
   decidedAt               DateTime?
+
+@@index([jobId])
+@@index([stage])
 }
 
 // ============ HR ============
@@ -510,6 +609,8 @@ model Attendance {
   sessions AttendanceSession[] // T3
 
   @@unique([membershipId, date])
+
+@@index([orgId, date])
 }
 
 model LeaveType {
@@ -539,6 +640,8 @@ model LeaveRequest {
   approverMembershipId String?
   decidedAt            DateTime?
   createdAt            DateTime     @default(now())
+
+@@index([orgId, membershipId])
 }
 
 // ============ FINANCE ============
@@ -548,7 +651,7 @@ model Invoice {
   orgId     String
   org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   clientId  String
-  client    Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client    Client       @relation(fields: [clientId], references: [id], onDelete: Restrict)
   number    String
   issueDate DateTime     @default(now())
   dueDate   DateTime
@@ -563,6 +666,9 @@ model Invoice {
   projectId String?
   paidAt    DateTime?
   createdAt DateTime     @default(now())
+
+@@index([orgId, clientId])
+@@index([orgId, status])
 }
 
 model Expense {
@@ -581,6 +687,9 @@ model Expense {
   notes        String?
   approvedById String?
   createdAt    DateTime     @default(now())
+
+@@index([orgId, membershipId])
+@@index([orgId, status])
 }
 
 // ============ RBAC / POLICY (T3) ============
@@ -652,6 +761,9 @@ model AttendanceSession {
   entries      SessionTaskEntry[]
   createdAt    DateTime           @default(now())
   // NO unique — multiple sessions per day are allowed
+
+@@index([orgId, membershipId])
+@@index([attendanceId])
 }
 
 model SessionTaskEntry {
@@ -723,6 +835,8 @@ model Payslip {
   createdAt         DateTime     @default(now())
 
   @@unique([runId, membershipId])
+
+@@index([membershipId])
 }
 
 model SalaryComponent {
@@ -763,6 +877,8 @@ model Notification {
   module    String? // frontend module id to navigate to
   readAt    DateTime?
   createdAt DateTime      @default(now())
+
+@@index([userId, readAt])
 }
 
 model Document {
@@ -780,6 +896,8 @@ model Document {
   uploadedById String?
   uploadedBy   Membership?  @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
   createdAt    DateTime     @default(now())
+
+@@index([orgId])
 }
 
 model ActivityLog {
@@ -793,12 +911,15 @@ model ActivityLog {
   entityId          String?
   message           String
   createdAt         DateTime     @default(now())
+
+@@index([orgId, entityType, entityId])
+@@index([orgId, createdAt])
 }
 
 model AuditLog {
   id                String       @id @default(cuid())
-  orgId             String
-  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId             String? // null = platform-level action
+  org               Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
   actorMembershipId String?
   actor             Membership?  @relation(fields: [actorMembershipId], references: [id], onDelete: SetNull)
   action            String
@@ -807,4 +928,22 @@ model AuditLog {
   oldValues         String? // JSON
   newValues         String? // JSON
   createdAt         DateTime     @default(now())
+
+@@index([orgId, createdAt])
+}
+
+// Public marketing site submissions (contact form + newsletter) — T7
+model ContactMessage {
+  id        String   @id @default(cuid())
+  type      String   @default("CONTACT") // CONTACT | NEWSLETTER
+  name      String?
+  email     String
+  company   String?
+  topic     String? // general | sales | support | feedback | partnership
+  message   String?
+  status    String   @default("NEW") // NEW | READ | ARCHIVED
+  createdAt DateTime @default(now())
+
+  @@index([type, status, createdAt])
+  @@index([email])
 }

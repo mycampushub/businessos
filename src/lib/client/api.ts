@@ -33,6 +33,30 @@ export async function api<T = unknown>(
   return json.data as T
 }
 
+/** api() for multipart uploads — body is FormData (never JSON-encoded, no
+ *  content-type header: the browser sets it with the boundary). */
+export async function apiForm<T = unknown>(
+  path: string,
+  form: FormData,
+  opts: { silent?: boolean } = {}
+): Promise<T> {
+  let res: Response
+  try {
+    res = await fetch(path, { method: 'POST', body: form })
+  } catch {
+    const msg = 'Network error — please try again'
+    if (!opts.silent) toast({ title: 'Request failed', description: msg, variant: 'destructive' })
+    throw new Error(msg)
+  }
+  const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T; error?: string }
+  if (!res.ok || json.ok === false) {
+    const msg = json.error || `Request failed (${res.status})`
+    if (!opts.silent) toast({ title: 'Something went wrong', description: msg, variant: 'destructive' })
+    throw new Error(msg)
+  }
+  return json.data as T
+}
+
 /** Fetch hook with manual refresh; pass null to skip fetching. */
 export function useData<T = unknown>(path: string | null, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null)

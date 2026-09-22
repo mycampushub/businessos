@@ -1,0 +1,100 @@
+/**
+ * OrgOS — Cloudflare Workers deployment configuration (project root, SINGLE
+ * source of truth — there is no wrangler.toml; the companion cron worker has
+ * its own config at cloudflare/cron-wrangler.jsonc).
+ * -------------------------------------------------------------------
+ * Production target: Cloudflare Workers + D1 (SQLite) + R2 (documents) + KV
+ * (sessions/cache). The Prisma schema is 100% SQLite/D1-compatible (see
+ * cloudflare/migrations/0001_init.sql).
+ *
+ * This file lives in the PROJECT ROOT on purpose: wrangler resolves relative
+ * paths relative to the config file's own location, and @opennextjs/cloudflare
+ * (build / dev / initOpenNextCloudflareForDev) looks for a root-level
+ * wrangler.jsonc. Paths below are root-relative: ".open-next/…" (OpenNext
+ * build output) and "cloudflare/migrations".
+ *
+ * Bindings (see cloudflare/env.d.ts for the typed shape):
+ *   DATABASE — D1 database (relational data; wired into Prisma at deploy time
+ *              via @prisma/adapter-d1, see cloudflare/snippets/db-d1.ts)
+ *   BUCKET   — R2 bucket (document files; used by src/lib/server/storage.ts
+ *              when the CF_WORKER var below is "1")
+ *   SESSIONS / CACHE — KV namespaces (reserved; not yet read by app code)
+ *
+ * Deploy path (see cloudflare/README.md for the full walkthrough):
+ *   bun add -d @opennextjs/cloudflare wrangler @prisma/adapter-d1
+ *   bunx prisma generate --schema cloudflare/schema.workers.prisma
+ *   npx wrangler d1 create orgos                → paste database_id below
+ *   npx wrangler r2 bucket create orgos-documents
+ *   bun run cf:d1:migrate:remote
+ *   bun run cf:deploy
+ *   npx wrangler secret put CRON_SECRET         (+ deploy the cron worker)
+ *
+ * Secrets (never commit — set with `wrangler secret put`):
+ *   APP_SECRET   session signing pepper
+ *   CRON_SECRET  shared secret for POST /api/cron/daily (must match the cron worker's)
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "orgos",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  // OpenNext serves the built Next.js assets through this binding
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+
+  // ---- D1: the relational database (same schema as prisma/schema.prisma) ----
+  "d1_databases": [
+    {
+      "binding": "DATABASE",
+      "database_name": "orgos",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "cloudflare/migrations",
+      "migrations_table": "__cf_d1_migrations"
+    }
+  ],
+
+  // ---- R2: object storage for uploaded document files (Document.storageKey) ----
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "orgos-documents",
+      "jurisdiction": "default"
+    }
+  ],
+
+  // ---- KV: hot caches + login rate-limit counters ----
+  "kv_namespaces": [
+    {
+      "binding": "SESSIONS",
+      "id": "REPLACE_WITH_SESSIONS_KV_NAMESPACE_ID"
+    },
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_CACHE_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // ---- Environment ----
+  // CF_WORKER=1 makes src/lib/server/storage.ts route put/get/delete through
+  // the BUCKET R2 binding instead of the local disk (db/uploads).
+  "vars": {
+    "APP_ENV": "production",
+    "DEFAULT_CURRENCY": "BDT",
+    "DEFAULT_TIMEZONE": "Asia/Dhaka",
+    "CF_WORKER": "1"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+
+  // NO cron trigger on this worker by design: scheduled maintenance (invoice
+  // overdue sweep, subscription/trial expiry, leave + task reminders, session
+  // purge) runs on the dedicated companion worker — cloudflare/cron-worker.ts
+  // + cloudflare/cron-wrangler.jsonc (`wrangler deploy --config
+  // cloudflare/cron-wrangler.jsonc`, documented in cloudflare/README.md).
+}

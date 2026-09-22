@@ -11,6 +11,16 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -26,7 +36,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { ROLE_LABELS, ROLE_TONE, relativeTime } from '@/lib/format'
-import { CalendarDays, Megaphone, Pin, Plus, TriangleAlert } from 'lucide-react'
+import { CalendarDays, Megaphone, Pencil, Pin, Plus, Trash2, TriangleAlert } from 'lucide-react'
 
 // ---------- local types (API shape from worklog T1-d) ----------
 
@@ -56,7 +66,7 @@ const CAN_PUBLISH = ['OWNER', 'ADMIN', 'MANAGER', 'HR']
 // ---------- view ----------
 
 export default function AnnouncementsView() {
-  const { role, org } = useWorkspace()
+  const { role, membership, org } = useWorkspace()
   const { data, loading, error, refresh } = useData<AnnouncementsData>('/api/announcements')
   const canPublish = CAN_PUBLISH.includes(role)
 
@@ -65,6 +75,16 @@ export default function AnnouncementsView() {
   const [body, setBody] = useState('')
   const [pinned, setPinned] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // edit / delete state — PATCH & DELETE /api/announcements/[id] allow the
+  // publisher roles (OWNER/ADMIN/MANAGER/HR) and the original author.
+  const [editing, setEditing] = useState<AnnouncementItem | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editBody, setEditBody] = useState('')
+  const [editPinned, setEditPinned] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [deleting, setDeleting] = useState<AnnouncementItem | null>(null)
+  const [deletingBusy, setDeletingBusy] = useState(false)
 
   const items = data?.items ?? []
 
@@ -79,6 +99,62 @@ export default function AnnouncementsView() {
     setBody('')
     setPinned(false)
     setOpen(true)
+  }
+
+  const canManage = (a: AnnouncementItem) =>
+    canPublish || (membership?.id != null && a.authorMembershipId === membership.id)
+
+  const openEdit = (a: AnnouncementItem) => {
+    setEditTitle(a.title)
+    setEditBody(a.body)
+    setEditPinned(a.pinned)
+    setEditing(a)
+  }
+
+  const saveEdit = async () => {
+    if (!editing) return
+    const t = editTitle.trim()
+    const b = editBody.trim()
+    if (!t) {
+      toast({ title: 'Title required', description: 'Give the announcement a title.', variant: 'destructive' })
+      return
+    }
+    if (!b) {
+      toast({ title: 'Body required', description: 'Write the announcement body.', variant: 'destructive' })
+      return
+    }
+    setSavingEdit(true)
+    try {
+      await api(`/api/announcements/${editing.id}`, {
+        method: 'PATCH',
+        body: { title: t, body: b, pinned: editPinned },
+      })
+      toast({ title: 'Announcement updated', description: 'Changes are live for every member.' })
+      setEditing(null)
+      refresh()
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  const confirmDelete = async () => {
+    if (!deleting) return
+    setDeletingBusy(true)
+    try {
+      await api(`/api/announcements/${deleting.id}`, { method: 'DELETE' })
+      toast({
+        title: 'Announcement deleted',
+        description: `“${deleting.title}” was removed from the feed.`,
+      })
+      setDeleting(null)
+      refresh()
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setDeletingBusy(false)
+    }
   }
 
   const submit = async () => {
@@ -191,15 +267,39 @@ export default function AnnouncementsView() {
                       </div>
                     </div>
                   </div>
-                  {a.pinned && (
-                    <Badge
-                      variant="outline"
-                      className="gap-1 border-emerald-600/30 bg-emerald-600/10 px-1.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400"
-                    >
-                      <Pin className="size-3" aria-hidden />
-                      Pinned
-                    </Badge>
-                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {a.pinned && (
+                      <Badge
+                        variant="outline"
+                        className="gap-1 border-emerald-600/30 bg-emerald-600/10 px-1.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400"
+                      >
+                        <Pin className="size-3" aria-hidden />
+                        Pinned
+                      </Badge>
+                    )}
+                    {canManage(a) && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-11"
+                          onClick={() => openEdit(a)}
+                          aria-label={`Edit announcement: ${a.title}`}
+                        >
+                          <Pencil className="size-4" aria-hidden />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-11 text-destructive hover:text-destructive"
+                          onClick={() => setDeleting(a)}
+                          aria-label={`Delete announcement: ${a.title}`}
+                        >
+                          <Trash2 className="size-4" aria-hidden />
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <h3 className="mt-3 text-lg font-semibold tracking-tight">{a.title}</h3>
                 <p className="mt-1.5 whitespace-pre-line text-sm text-muted-foreground">{a.body}</p>
@@ -261,6 +361,85 @@ export default function AnnouncementsView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* edit announcement dialog */}
+      <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null) }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit announcement</DialogTitle>
+            <DialogDescription>
+              Changes are visible to every member of {org?.name ?? 'your organization'} immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="ann-edit-title">Title</Label>
+              <Input
+                id="ann-edit-title"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                placeholder="e.g. Q4 all-hands — Thursday 4pm"
+                maxLength={200}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="ann-edit-body">Body</Label>
+              <Textarea
+                id="ann-edit-body"
+                rows={6}
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                placeholder="Write the broadcast — agenda, context, action items…"
+                className="resize-y"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">Pin to top</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Pinned announcements stay first in the feed for everyone.
+                </p>
+              </div>
+              <Switch checked={editPinned} onCheckedChange={setEditPinned} aria-label="Pin announcement to top" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)} disabled={savingEdit}>
+              Cancel
+            </Button>
+            <Button onClick={saveEdit} disabled={savingEdit}>
+              {savingEdit ? 'Saving…' : 'Save changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* delete confirmation */}
+      <AlertDialog open={!!deleting} onOpenChange={(o) => { if (!o) setDeleting(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this announcement?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{deleting?.title}” will be permanently removed from the feed for every member. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingBusy}>Cancel</AlertDialogCancel>
+            {/* preventDefault keeps the dialog open while the DELETE runs */}
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              disabled={deletingBusy}
+              onClick={(e) => {
+                e.preventDefault()
+                void confirmDelete()
+              }}
+            >
+              {deletingBusy ? 'Deleting…' : 'Delete announcement'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

@@ -30,7 +30,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import {
-  Banknote, CalendarDays, Handshake, Pencil, Plus, Target, Trash2, TrendingUp, Trophy, XCircle,
+  Banknote, CalendarDays, FolderKanban, Handshake, Pencil, Plus, Target, Trash2, TrendingUp, Trophy, XCircle,
 } from 'lucide-react'
 
 // ---------- local types ----------
@@ -52,6 +52,7 @@ interface DealItem {
   ownerName: string | null
   clientId: string | null
   clientName: string | null
+  projectId: string | null
   notes: string | null
   wonAt: string | null
   createdAt: string
@@ -61,6 +62,7 @@ interface StageItem { id: string; name: string; order: number; isTerminalWon: bo
 
 interface CompanyLite { id: string; name: string }
 interface ContactLite { id: string; name: string; companyId: string | null }
+interface ProjectLite { id: string; name: string }
 
 interface DealForm {
   name: string
@@ -68,12 +70,13 @@ interface DealForm {
   companyId: string
   contactId: string
   stageId: string
+  projectId: string
   probability: string
   expectedCloseDate: string
   notes: string
 }
 
-const EMPTY_FORM: DealForm = { name: '', value: '', companyId: '', contactId: '', stageId: '', probability: '20', expectedCloseDate: '', notes: '' }
+const EMPTY_FORM: DealForm = { name: '', value: '', companyId: '', contactId: '', stageId: '', projectId: '', probability: '20', expectedCloseDate: '', notes: '' }
 
 const STAGE_CRUD_LABELS = {
   boardName: 'stage',
@@ -101,6 +104,12 @@ export default function CrmDealsView() {
 
   const { data, loading, error, refresh } = useData<{ items: DealItem[]; stages: StageItem[] }>('/api/crm/deals')
   const items = data?.items ?? []
+  // project names for the linked-project chip/row (graceful when projects are not visible)
+  const projectsQ = useData<{ items: ProjectLite[] }>('/api/projects')
+  const projectNameOf = useMemo(() => {
+    const m = new Map((projectsQ.data?.items ?? []).map((p) => [p.id, p.name]))
+    return (id: string | null): string | null => (id ? m.get(id) ?? null : null)
+  }, [projectsQ.data])
   const stages = useMemo(
     () => [...(data?.stages ?? [])].sort((a, b) => a.order - b.order),
     [data?.stages]
@@ -159,6 +168,7 @@ export default function CrmDealsView() {
       companyId: deal.companyId ?? '',
       contactId: deal.contactId ?? '',
       stageId: deal.stageId ?? '',
+      projectId: deal.projectId ?? '__none',
       probability: String(deal.probability),
       expectedCloseDate: deal.expectedCloseDate?.slice(0, 10) ?? '',
       notes: deal.notes ?? '',
@@ -174,6 +184,8 @@ export default function CrmDealsView() {
     setSaving(true)
     try {
       if (editing) {
+        // linked project: only sent when it changed (null = unlink the deal)
+        const projectChanged = form.projectId !== (editing.projectId ?? '__none')
         await api(`/api/crm/deals/${editing.id}`, {
           method: 'PATCH',
           body: {
@@ -182,6 +194,7 @@ export default function CrmDealsView() {
             probability: form.probability === '' ? undefined : Number(form.probability),
             expectedCloseDate: form.expectedCloseDate || null, // null clears on PATCH
             notes: form.notes,
+            ...(projectChanged ? { projectId: form.projectId === '__none' ? null : form.projectId } : {}),
           },
         })
         toast({ title: 'Deal updated', description: `${form.name} was saved.` })
@@ -496,6 +509,17 @@ export default function CrmDealsView() {
                 <div><p className="text-xs text-muted-foreground">Owner</p><p>{detail.ownerName ?? 'Unassigned'}</p></div>
                 <div><p className="text-xs text-muted-foreground">Client</p><p>{detail.clientName ?? 'Not linked yet'}</p></div>
                 <div>
+                  <p className="text-xs text-muted-foreground">Linked project</p>
+                  {detail.projectId ? (
+                    <p className="inline-flex items-center gap-1.5">
+                      <FolderKanban className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      {projectNameOf(detail.projectId) ?? 'Linked'}
+                    </p>
+                  ) : (
+                    <p className="text-muted-foreground">Not linked</p>
+                  )}
+                </div>
+                <div>
                   <p className="text-xs text-muted-foreground">{detail.status === 'WON' ? 'Won at' : 'Created'}</p>
                   <p>{fmtDate(detail.status === 'WON' ? detail.wonAt : detail.createdAt)}</p>
                 </div>
@@ -598,6 +622,30 @@ export default function CrmDealsView() {
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+            )}
+            {editing && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="deal-project" className="flex items-center gap-1.5">
+                  <FolderKanban className="size-3.5" aria-hidden /> Linked project
+                </Label>
+                <Select
+                  value={form.projectId}
+                  onValueChange={(v) => setF('projectId')(v)}
+                >
+                  <SelectTrigger id="deal-project" className="w-full">
+                    <SelectValue placeholder={projectsQ.loading ? 'Loading projects…' : 'No linked project'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">No linked project</SelectItem>
+                    {(projectsQ.data?.items ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  Tie the deal to its delivery project — handy after a win, for the kickoff flow.
+                </p>
               </div>
             )}
             <div className="grid gap-4 sm:grid-cols-2">

@@ -2,10 +2,12 @@
 
 import { useState } from 'react'
 import {
-  DndContext, DragOverlay, PointerSensor, useDroppable, useSensor, useSensors,
+  DndContext, DragOverlay, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors,
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
-import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import {
+  SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { Check, Plus, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -24,6 +26,13 @@ export interface KanbanColumnDef {
 
 interface KanbanItem {
   id: string
+}
+
+/** Human-readable card name for aria-labels — views pass tasks (title), deals
+ *  (name) or recruitment applications (candidateName); falls back to the id. */
+function cardName(item: KanbanItem): string {
+  const named = item as { title?: string; name?: string; candidateName?: string }
+  return named.title ?? named.name ?? named.candidateName ?? item.id
 }
 
 function KanbanColumn<T extends KanbanItem>({
@@ -72,7 +81,13 @@ function KanbanColumn<T extends KanbanItem>({
       <div className="flex max-h-[65vh] min-h-24 flex-col gap-2 overflow-y-auto px-2 pb-3">
         <SortableContext items={colItems.map((i) => i.id)} strategy={verticalListSortingStrategy}>
           {colItems.map((item) => (
-            <SortableCard key={item.id} item={item} renderCard={renderCard} onClick={onCardClick} />
+            <SortableCard
+              key={item.id}
+              item={item}
+              columnLabel={col.title}
+              renderCard={renderCard}
+              onClick={onCardClick}
+            />
           ))}
         </SortableContext>
         {colItems.length === 0 && (
@@ -87,10 +102,12 @@ function KanbanColumn<T extends KanbanItem>({
 
 function SortableCard<T extends KanbanItem>({
   item,
+  columnLabel,
   renderCard,
   onClick,
 }: {
   item: T
+  columnLabel: string
   renderCard: (item: T) => React.ReactNode
   onClick?: (item: T) => void
 }) {
@@ -104,7 +121,7 @@ function SortableCard<T extends KanbanItem>({
       className={cn('cursor-grab touch-none select-none rounded-lg', isDragging && 'dragging-card')}
       onClick={() => onClick?.(item)}
       role="button"
-      aria-label={`Card ${item.id}`}
+      aria-label={`${cardName(item)} · ${columnLabel}`}
     >
       {renderCard(item)}
     </div>
@@ -150,7 +167,12 @@ export function KanbanBoard<T extends KanbanItem>({
   className?: string
 }) {
   const [activeItem, setActiveItem] = useState<T | null>(null)
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+  // Pointer drag for mouse/touch + KeyboardSensor so cards are also draggable
+  // with Enter/Space + arrow keys (sortableKeyboardCoordinates).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
 
   function findColumn(id: string): string | null {
     if (id.startsWith('col:')) return id.slice(4)

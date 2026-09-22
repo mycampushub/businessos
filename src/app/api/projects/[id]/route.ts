@@ -62,8 +62,8 @@ export async function GET(req: NextRequest, route: RouteParams): Promise<NextRes
           include: {
             project: { select: { id: true, name: true, color: true, status: true } },
             milestone: { select: { id: true, title: true } },
-            dependencies: { select: { dependsOnTask: { select: { id: true, title: true } } } },
-            dependents: { select: { task: { select: { id: true, title: true } } } },
+            dependencies: { select: { dependsOnTask: { select: { id: true, title: true, status: true } } } },
+            dependents: { select: { task: { select: { id: true, title: true, status: true } } } },
             _count: { select: { subtasks: true, dependencies: true, comments: true } },
           },
         },
@@ -204,7 +204,7 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
 
     const project = await db.project.findFirst({
       where: { id, orgId: org.id },
-      select: { id: true, name: true, status: true, managerMembershipId: true },
+      select: { id: true, name: true, status: true, managerMembershipId: true, startDate: true, endDate: true },
     })
     if (!project) return fail('Project not found', 404)
 
@@ -232,6 +232,17 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
       const p = optNum(data.progress)
       if (p === undefined) return fail('Field "progress" must be a number', 422)
       update.progress = Math.max(0, Math.min(100, Math.round(p)))
+    }
+
+    // the project window must stay a valid range (effective values)
+    const effStart = (update.startDate as Date | null | undefined) !== undefined
+      ? (update.startDate as Date | null)
+      : project.startDate
+    const effEnd = (update.endDate as Date | null | undefined) !== undefined
+      ? (update.endDate as Date | null)
+      : project.endDate
+    if (effStart && effEnd && dayVal(effEnd) < dayVal(effStart)) {
+      return fail('End date cannot be before the start date', 422)
     }
 
     if (data.clientId !== undefined) {
@@ -315,6 +326,11 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
 
     return ok({ ...updated, client: updated.client ?? null, manager, managerName: manager?.user.name ?? null })
   })(req)
+}
+
+/** local-midnight value (project dates are whole days) */
+function dayVal(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
 /** DELETE /api/projects/[id] — OWNER/ADMIN only (projects FULL) */

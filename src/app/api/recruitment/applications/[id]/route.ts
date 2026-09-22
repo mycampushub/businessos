@@ -127,7 +127,28 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
             select: { id: true },
           })
           if (!existingMembership) {
-            const memberCount = await db.membership.count({ where: { orgId: job.orgId } })
+            // employee code: prefix = org name initials (first letter of each word,
+            // uppercase, max 4 chars, fallback 'EMP') + collision-safe sequence —
+            // bumped while the code already exists in the org (manual/imported codes)
+            const jobOrg = await db.organization.findUnique({
+              where: { id: job.orgId },
+              select: { name: true },
+            })
+            const prefix =
+              (jobOrg?.name ?? '')
+                .split(/\s+/)
+                .map((w) => w.match(/[A-Za-z]/)?.[0] ?? '')
+                .join('')
+                .toUpperCase()
+                .slice(0, 4) || 'EMP'
+            let seq = (await db.membership.count({ where: { orgId: job.orgId } })) + 1
+            let employeeCode = `${prefix}-${String(seq).padStart(3, '0')}`
+            while (
+              await db.membership.findFirst({ where: { orgId: job.orgId, employeeCode }, select: { id: true } })
+            ) {
+              seq += 1
+              employeeCode = `${prefix}-${String(seq).padStart(3, '0')}`
+            }
             const newMembership = await db.membership.create({
               data: {
                 orgId: job.orgId,
@@ -138,7 +159,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
                 departmentId: job.departmentId ?? null,
                 joinedAt: new Date(),
                 employmentType: 'FULL_TIME',
-                employeeCode: `MER-${String(memberCount + 1).padStart(3, '0')}`,
+                employeeCode,
               },
             })
             await notifyUsers({

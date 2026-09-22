@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useTheme } from 'next-themes'
 import { useWorkspace } from '@/lib/client/store'
 import { api } from '@/lib/client/api'
 import { cn } from '@/lib/utils'
@@ -18,7 +19,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
   Bell, CheckCheck, LogOut, UserRoundCog, Megaphone, CheckSquare, FolderKanban, CalendarDays, Receipt, Target, Users2, Briefcase, Settings,
-  FileText, Users, TrendingUp, Video, Search, Loader2,
+  FileText, Users, TrendingUp, Video, Search, Loader2, Sun, Moon,
 } from 'lucide-react'
 
 const NOTIF_ICONS: Record<string, typeof Bell> = {
@@ -238,6 +239,44 @@ function GlobalSearch() {
   )
 }
 
+// ---------- dark mode toggle ----------
+
+function ThemeToggle() {
+  const { resolvedTheme, setTheme } = useTheme()
+
+  // Standard next-themes hydration guard: resolvedTheme is undefined until the
+  // client mounts, so it must never drive the SSR markup. The icons below are
+  // CSS-driven (dark: variants) so server and first client render are identical.
+  // (useSyncExternalStore = the lint-safe "mounted" flag: false on the server,
+  // true on the client after hydration — no setState-in-effect.)
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  )
+
+  function toggle() {
+    const dark =
+      mounted && resolvedTheme
+        ? resolvedTheme === 'dark'
+        : typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+    setTheme(dark ? 'light' : 'dark')
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="size-11"
+      aria-label="Toggle dark mode"
+      onClick={toggle}
+    >
+      <Sun className="size-4.5 dark:hidden" aria-hidden />
+      <Moon className="hidden size-4.5 dark:block" aria-hidden />
+    </Button>
+  )
+}
+
 export function AppTopbar() {
   const { me, logout, navigate, notifications, unreadCount, refreshNotifications, org } = useWorkspace()
   const [marking, setMarking] = useState(false)
@@ -263,7 +302,7 @@ export function AppTopbar() {
   }
 
   return (
-    <header className="sticky top-0 z-20 flex items-center gap-3 border-b bg-card/80 px-4 py-2.5 backdrop-blur lg:px-6">
+    <header className="sticky top-14 z-20 flex items-center gap-3 border-b bg-card/80 px-4 py-2.5 backdrop-blur lg:top-0 lg:px-6">
       <div className="min-w-0 shrink-0 lg:w-56">
         <p className="truncate text-sm font-medium">{org?.name ?? 'OrgOS Platform'}</p>
         <p className="hidden truncate text-xs text-muted-foreground sm:block">
@@ -276,6 +315,8 @@ export function AppTopbar() {
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        <ThemeToggle />
+
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="ghost" size="icon" className="relative" aria-label={`Notifications (${unreadCount} unread)`}>

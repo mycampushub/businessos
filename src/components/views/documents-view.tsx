@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useData, api } from '@/lib/client/api'
+import { useData, api, apiForm } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { PageHeader, EmptyState } from '@/components/app/page-header'
 import { StatCard } from '@/components/app/stat-card'
@@ -36,11 +36,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { fmtDate, relativeTime } from '@/lib/format'
 import {
   CloudUpload,
+  Download,
   Eye,
   File,
   FileText,
@@ -49,6 +52,7 @@ import {
   FolderOpen,
   HardDrive,
   Info,
+  Loader2,
   Search,
   Sheet,
   Trash2,
@@ -73,7 +77,7 @@ interface DocItem {
   name: string
   mimeType: string | null
   size: number | null
-  storageKey: string
+  storageKey: string | null
   version: number
   uploadedById: string | null
   createdAt: string
@@ -133,6 +137,27 @@ const MIMETYPE_OPTIONS: Array<{ value: DocKind; label: string; mime: string | un
   { value: 'other', label: 'Other', mime: undefined },
 ]
 
+/** Client-side mirror of the server MIME allowlist (src/lib/server/storage.ts —
+ *  the view cannot import that module directly, it pulls in fs/promises). */
+const ACCEPT_MIME = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'text/plain',
+  'text/csv',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/zip',
+  'application/json',
+].join(',')
+
+/** Client mirror of MAX_UPLOAD_BYTES — the server re-validates. */
+const MAX_FILE_BYTES = 25 * 1024 * 1024
+
 const NEW_FOLDER = '__new__'
 const DEFAULT_FOLDER = '__default__'
 const NO_PROJECT = 'none'
@@ -150,6 +175,8 @@ export default function DocumentsView() {
 
   // upload dialog
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [mode, setMode] = useState<'upload' | 'link'>('upload')
+  const [file, setFile] = useState<File | null>(null)
   const [form, setForm] = useState({
     name: '',
     folderChoice: DEFAULT_FOLDER,
@@ -157,6 +184,7 @@ export default function DocumentsView() {
     projectId: NO_PROJECT,
     kind: 'pdf' as DocKind,
     sizeKb: '',
+    notes: '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -196,16 +224,14 @@ export default function DocumentsView() {
     !!membership && (d.uploadedById === membership.id || role === 'OWNER' || role === 'ADMIN')
 
   const openUpload = () => {
-    setForm((f) => ({ ...f, name: '', newFolder: '', sizeKb: '', folderChoice: DEFAULT_FOLDER, projectId: NO_PROJECT, kind: 'pdf' }))
+    setForm((f) => ({ ...f, name: '', newFolder: '', sizeKb: '', notes: '', folderChoice: DEFAULT_FOLDER, projectId: NO_PROJECT, kind: 'pdf' }))
+    setFile(null)
+    setMode('upload')
     setUploadOpen(true)
   }
 
   const submitUpload = async () => {
-    const name = form.name.trim()
-    if (!name) {
-      toast({ title: 'Name required', description: 'Give the document a file name.', variant: 'destructive' })
-      return
-    }
+    console.log('[F6-debug] submitUpload', { mode, hasFile: !!file, fileName: file?.name, name: form.name })
     const folderName =
       form.folderChoice === NEW_FOLDER
         ? form.newFolder.trim()
@@ -216,25 +242,50 @@ export default function DocumentsView() {
       toast({ title: 'Folder name required', description: 'Enter a name for the new folder.', variant: 'destructive' })
       return
     }
-    const mime = MIMETYPE_OPTIONS.find((o) => o.value === form.kind)?.mime
-    const kb = Number(form.sizeKb)
+    const name = form.name.trim()
+    if (!name) {
+      toast({ title: 'Name required', description: 'Give the document a file name.', variant: 'destructive' })
+      return
+    }
+    if (mode === 'upload' && !file) {
+      toast({ title: 'File required', description: 'Choose a file to upload first.', variant: 'destructive' })
+      return
+    }
+    if (mode === 'upload' && file && file.size > MAX_FILE_BYTES) {
+      toast({ title: 'File too large', description: 'Maximum upload size is 25 MB.', variant: 'destructive' })
+      return
+    }
+
     setSaving(true)
     try {
-      await api('/api/documents', {
-        method: 'POST',
-        body: {
-          name,
-          folder: folderName,
-          projectId: form.projectId === NO_PROJECT ? undefined : form.projectId,
-          mimeType: mime,
-          size: form.sizeKb.trim() !== '' && !Number.isNaN(kb) ? Math.round(kb * 1024) : undefined,
-        },
-      })
-      toast({ title: 'Document uploaded', description: `${name} added to ${folderName}.` })
+      if (mode === 'upload' && file) {
+        const fd = new FormData()
+        fd.append('file', file)
+        fd.append('name', name)
+        fd.append('folder', folderName)
+        if (form.notes.trim()) fd.append('notes', form.notes.trim())
+        if (form.projectId !== NO_PROJECT) fd.append('projectId', form.projectId)
+        await apiForm('/api/documents', fd)
+        toast({ title: 'File uploaded', description: `${name} (${fmtSize(file.size)}) stored in ${folderName}.` })
+      } else {
+        const mime = MIMETYPE_OPTIONS.find((o) => o.value === form.kind)?.mime
+        const kb = Number(form.sizeKb)
+        await api('/api/documents', {
+          method: 'POST',
+          body: {
+            name,
+            folder: folderName,
+            projectId: form.projectId === NO_PROJECT ? undefined : form.projectId,
+            mimeType: mime,
+            size: form.sizeKb.trim() !== '' && !Number.isNaN(kb) ? Math.round(kb * 1024) : undefined,
+          },
+        })
+        toast({ title: 'Document registered', description: `${name} added to ${folderName} (metadata only).` })
+      }
       setUploadOpen(false)
       refresh()
     } catch {
-      /* api() already toasts */
+      /* api()/apiForm() already toasts */
     } finally {
       setSaving(false)
     }
@@ -446,6 +497,13 @@ export default function DocumentsView() {
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
+                        {d.storageKey && (
+                          <Button asChild variant="ghost" size="icon" className="size-11 text-muted-foreground hover:text-foreground sm:size-9">
+                            <a href={`/api/documents/${d.id}/download`} download aria-label={`Download ${d.name}`}>
+                              <Download className="size-4" aria-hidden />
+                            </a>
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -480,10 +538,90 @@ export default function DocumentsView() {
       <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Upload document</DialogTitle>
-            <DialogDescription>Register a file in the organization library.</DialogDescription>
+            <DialogTitle>Add document</DialogTitle>
+            <DialogDescription>Upload a real file, or register metadata only.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4">
+            <Tabs value={mode} onValueChange={(v) => setMode(v === 'link' ? 'link' : 'upload')}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="upload">
+                  <CloudUpload className="size-4" aria-hidden />
+                  Upload file
+                </TabsTrigger>
+                <TabsTrigger value="link">
+                  <FileText className="size-4" aria-hidden />
+                  Register link only
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="upload" className="flex flex-col gap-4 pt-2">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="doc-file">File</Label>
+                  <Input
+                    id="doc-file"
+                    type="file"
+                    accept={ACCEPT_MIME}
+                    onChange={(e) => {
+                      const picked = e.target.files?.[0] ?? null
+                      setFile(picked)
+                      if (picked) setForm((f) => ({ ...f, name: picked.name }))
+                    }}
+                    aria-label="Choose a file to upload"
+                  />
+                  {file && (
+                    <p className="text-xs text-muted-foreground">
+                      {file.name} · {fmtSize(file.size)}
+                      {file.size > MAX_FILE_BYTES && (
+                        <span className="font-medium text-destructive"> — exceeds the 25 MB limit</span>
+                      )}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    PDF, images, Office docs, text/CSV, ZIP or JSON — up to 25 MB, counted against your plan storage.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="doc-notes">Notes (optional)</Label>
+                  <Textarea
+                    id="doc-notes"
+                    value={form.notes}
+                    onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                    placeholder="e.g. Signed copy — v2 supersedes v1"
+                    rows={2}
+                  />
+                </div>
+              </TabsContent>
+              <TabsContent value="link" className="grid gap-4 pt-2 sm:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                  <Label>File type</Label>
+                  <Select value={form.kind} onValueChange={(v) => setForm((f) => ({ ...f, kind: v as DocKind }))}>
+                    <SelectTrigger className="w-full" aria-label="File type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MIMETYPE_OPTIONS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="doc-size">Size (KB)</Label>
+                  <Input
+                    id="doc-size"
+                    type="number"
+                    min="0"
+                    value={form.sizeKb}
+                    onChange={(e) => setForm((f) => ({ ...f, sizeKb: e.target.value }))}
+                    placeholder="e.g. 240"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  Registers metadata only — no file is stored, so there is nothing to download for this entry.
+                </p>
+              </TabsContent>
+            </Tabs>
             <div className="flex flex-col gap-2">
               <Label htmlFor="doc-name">File name</Label>
               <Input
@@ -542,39 +680,11 @@ export default function DocumentsView() {
                 </Select>
               </div>
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
-                <Label>File type</Label>
-                <Select value={form.kind} onValueChange={(v) => setForm((f) => ({ ...f, kind: v as DocKind }))}>
-                  <SelectTrigger className="w-full" aria-label="File type">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {MIMETYPE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="doc-size">Size (KB)</Label>
-                <Input
-                  id="doc-size"
-                  type="number"
-                  min="0"
-                  value={form.sizeKb}
-                  onChange={(e) => setForm((f) => ({ ...f, sizeKb: e.target.value }))}
-                  placeholder="e.g. 240"
-                />
-              </div>
-            </div>
             <div className="flex items-start gap-2.5 rounded-lg border border-dashed bg-muted/40 p-3 text-xs text-muted-foreground">
               <Info className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden />
               <p>
-                Files are organized as <span className="font-mono">{'{org-slug}/{folder}/{name}'}</span> — names must be
-                unique inside a folder.
+                Uploaded files are stored per organization — locally in the sandbox, on Cloudflare R2 in production —
+                and count against your plan's storage quota.
               </p>
             </div>
           </div>
@@ -582,8 +692,13 @@ export default function DocumentsView() {
             <Button variant="outline" onClick={() => setUploadOpen(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={submitUpload} disabled={saving}>
-              {saving ? 'Uploading…' : 'Upload'}
+            <Button onClick={submitUpload} disabled={saving || (mode === 'upload' && !file)}>
+              {saving ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <CloudUpload className="size-4" aria-hidden />
+              )}
+              {saving ? (mode === 'upload' ? 'Uploading…' : 'Registering…') : mode === 'upload' ? 'Upload' : 'Register'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -660,21 +775,37 @@ export default function DocumentsView() {
               </dl>
               <div className="rounded-lg bg-muted p-3">
                 <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Storage key
+                  Storage
                 </p>
-                <code className="break-all font-mono text-xs">{detailsDoc.storageKey}</code>
+                {detailsDoc.storageKey ? (
+                  <code className="break-all font-mono text-xs">{detailsDoc.storageKey}</code>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Metadata only — no file stored for this entry.
+                  </p>
+                )}
               </div>
               <DialogFooter>
-                {canDelete(detailsDoc) && (
-                  <Button
-                    variant="outline"
-                    className="mr-auto text-destructive hover:text-destructive"
-                    onClick={() => setDeleteDoc(detailsDoc)}
-                  >
-                    <Trash2 className="size-4" aria-hidden />
-                    Delete
-                  </Button>
-                )}
+                <div className="mr-auto flex items-center gap-2">
+                  {detailsDoc.storageKey && (
+                    <Button asChild>
+                      <a href={`/api/documents/${detailsDoc.id}/download`} download>
+                        <Download className="size-4" aria-hidden />
+                        Download
+                      </a>
+                    </Button>
+                  )}
+                  {canDelete(detailsDoc) && (
+                    <Button
+                      variant="outline"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setDeleteDoc(detailsDoc)}
+                    >
+                      <Trash2 className="size-4" aria-hidden />
+                      Delete
+                    </Button>
+                  )}
+                </div>
                 <Button variant="outline" onClick={() => setDetailsDoc(null)}>
                   Close
                 </Button>

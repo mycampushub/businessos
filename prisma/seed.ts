@@ -60,6 +60,7 @@ async function wipe() {
   await db.membership.deleteMany()
   await db.department.deleteMany()
   await db.organization.deleteMany()
+  await db.plan.deleteMany()
   await db.session.deleteMany()
   await db.user.deleteMany()
 }
@@ -87,7 +88,7 @@ async function main() {
   ] as const
   for (const [email, name, headline, bio] of userDefs) {
     const u = await db.user.create({
-      data: { email, name, headline, bio, passwordHash: PASSWORD, location: 'Dhaka, Bangladesh', skills: 'Communication, Teamwork, Problem Solving' },
+      data: { email, name, headline, bio, passwordHash: PASSWORD, emailVerified: new Date(), location: 'Dhaka, Bangladesh', skills: 'Communication, Teamwork, Problem Solving' },
     })
     users[email] = u
   }
@@ -97,14 +98,14 @@ async function main() {
     data: {
       email: 'saas@orgos.dev', name: 'Farhan Chowdhury', headline: 'SaaS Platform Owner',
       bio: 'Runs the OrgOS platform — organizations, moderation and billing.',
-      passwordHash: PASSWORD, location: 'Dhaka, Bangladesh', platformAdmin: true,
+      passwordHash: PASSWORD, emailVerified: new Date(), location: 'Dhaka, Bangladesh', platformAdmin: true,
     },
   })
   await db.user.create({
     data: {
       email: 'suspended@orgos.dev', name: 'Sabbir Ahmed', headline: 'Spam account (suspended)',
       bio: 'Suspended by platform moderation for abusive job posts.',
-      passwordHash: PASSWORD, location: 'Dhaka, Bangladesh', status: 'SUSPENDED',
+      passwordHash: PASSWORD, emailVerified: new Date(), location: 'Dhaka, Bangladesh', status: 'SUSPENDED',
     },
   })
   console.log(`Seeded ${Object.keys(users).length + 2} users (incl. platform admin ${saas.email})`)
@@ -240,7 +241,7 @@ async function main() {
   const nwTasks: Array<[string, string, number, number]> = [
     ['Discovery workshop', 'DONE', -28, -25],
     ['Moodboards & direction', 'DONE', -24, -18],
-    ['Logo system', 'IN_PROGRESS', -17, 5],
+    ['Logo system', 'IN_PROGRESS', -10, 9],
     ['Packaging concepts', 'TODO', 2, 18],
     ['Brand guidelines book', 'TODO', 12, 35],
     ['Client presentation', 'TODO', 30, 38],
@@ -374,10 +375,10 @@ async function main() {
   // ============== PROJECTS ==============
   const projectIds: Record<string, string> = {}
   const projectDefs = [
-    ['GreenGrocer E-commerce Platform', 'MER-001', 'ACTIVE', 'HIGH', 850000, -60, 45, 45, 'GreenGrocer', 'farhan@orgos.dev', 'Modern headless commerce platform with POS integration for 14 physical stores.'],
-    ['EduPath Learning Platform', 'MER-002', 'ACTIVE', 'URGENT', 1200000, -90, 20, 72, 'EduPath', 'maria@orgos.dev', 'LMS with live classes, assessments and parent portal for K-12 students.'],
+    ['GreenGrocer E-commerce Platform', 'MER-001', 'ACTIVE', 'HIGH', 850000, -60, 60, 45, 'GreenGrocer', 'farhan@orgos.dev', 'Modern headless commerce platform with POS integration for 14 physical stores.'],
+    ['EduPath Learning Platform', 'MER-002', 'ACTIVE', 'URGENT', 1200000, -90, 35, 72, 'EduPath', 'maria@orgos.dev', 'LMS with live classes, assessments and parent portal for K-12 students.'],
     ['HealthBridge Brand & Website', 'MER-003', 'COMPLETED', 'MEDIUM', 450000, -150, -30, 100, 'HealthBridge', 'maria@orgos.dev', 'Complete rebrand plus corporate website and appointment booking.'],
-    ['UrbanCart Mobile App', 'MER-004', 'PLANNING', 'HIGH', 600000, 7, 120, 5, 'UrbanCart', 'farhan@orgos.dev', 'React Native shopping app with loyalty wallet and push campaigns.'],
+    ['UrbanCart Mobile App', 'MER-004', 'PLANNING', 'HIGH', 600000, 3, 120, 5, 'UrbanCart', 'farhan@orgos.dev', 'React Native shopping app with loyalty wallet and push campaigns.'],
     ['Meridian Marketing Site Revamp', 'MER-005', 'PLANNING', 'LOW', 150000, 14, 60, 0, null, 'zahin@orgos.dev', 'Internal project — new agency website with case study engine.'],
   ] as const
   for (const [name, code, status, priority, budget, startAgo, endIn, progress, client, manager, description] of projectDefs) {
@@ -415,12 +416,12 @@ async function main() {
   const msDefs: Array<[string, string, string, number | null, string, string?]> = [
     ['GreenGrocer E-commerce Platform', 'Discovery & Requirements', 'Stakeholder interviews, POS audit and technical scoping.', -55, 'COMPLETED', -50],
     ['GreenGrocer E-commerce Platform', 'UI/UX Design System', 'Figma library, responsive patterns and brand application.', -48, 'COMPLETED', -35],
-    ['GreenGrocer E-commerce Platform', 'Core Commerce Development', 'Catalog, cart, checkout, payments (bKash/SSLCommerz), POS sync.', -30, 'IN_PROGRESS'],
+    ['GreenGrocer E-commerce Platform', 'Core Commerce Development', 'Catalog, cart, checkout, payments (bKash/SSLCommerz), POS sync.', 12, 'IN_PROGRESS'],
     ['GreenGrocer E-commerce Platform', 'Integrations & Data Migration', 'ERP sync, loyalty points, 12k SKU migration.', 10, 'PENDING'],
     ['GreenGrocer E-commerce Platform', 'QA, Launch & Hypercare', 'Load testing, staff training, go-live support.', 35, 'PENDING'],
     ['EduPath Learning Platform', 'Discovery', 'User research with 3 schools and curriculum mapping.', -85, 'COMPLETED', -80],
     ['EduPath Learning Platform', 'MVP Build', 'Courses, live classes, quizzes, student portal.', -70, 'COMPLETED', -30],
-    ['EduPath Learning Platform', 'Content Tools', 'Lesson builder, bulk upload, rich media.', -20, 'IN_PROGRESS'],
+    ['EduPath Learning Platform', 'Content Tools', 'Lesson builder, bulk upload, rich media.', 14, 'IN_PROGRESS'],
     ['EduPath Learning Platform', 'Pilot Testing & Handover', '2 pilot schools, teacher training, SLA.', 12, 'PENDING'],
     ['HealthBridge Brand & Website', 'Brand Identity', 'Logo, palette, typography, guidelines.', -130, 'COMPLETED', -110],
     ['HealthBridge Brand & Website', 'Website & Booking', 'Corporate site, doctor profiles, appointments.', -100, 'COMPLETED', -35],
@@ -446,22 +447,22 @@ async function main() {
     ['Design checkout flow components', 'GreenGrocer E-commerce Platform', 'tania@orgos.dev', 'DONE', 'HIGH', 'UI/UX Design System', -45, -30, 16, 'design,figma', 'Checkout, cart drawer, payment selection states.'],
     ['Build design tokens package', 'GreenGrocer E-commerce Platform', 'rafi@orgos.dev', 'DONE', 'MEDIUM', 'UI/UX Design System', -38, -28, 12, 'frontend,design-system', 'Shared token JSON mapped to Tailwind config.'],
     ['Implement catalog & search API', 'GreenGrocer E-commerce Platform', 'meher@orgos.dev', 'DONE', 'HIGH', 'Core Commerce Development', -30, -12, 40, 'backend,search', 'Product listing with faceted filters and typo tolerance.'],
-    ['Develop cart & checkout frontend', 'GreenGrocer E-commerce Platform', 'rafi@orgos.dev', 'IN_PROGRESS', 'URGENT', 'Core Commerce Development', -10, 3, 32, 'frontend', 'Optimistic cart, guest checkout, coupons.'],
-    ['Integrate bKash payment gateway', 'GreenGrocer E-commerce Platform', 'meher@orgos.dev', 'IN_PROGRESS', 'URGENT', 'Core Commerce Development', -7, 5, 24, 'backend,payments', 'Tokenized checkout + webhook reconciliation.'],
+    ['Develop cart & checkout frontend', 'GreenGrocer E-commerce Platform', 'rafi@orgos.dev', 'IN_PROGRESS', 'URGENT', 'Core Commerce Development', -12, 8, 32, 'frontend', 'Optimistic cart, guest checkout, coupons.'],
+    ['Integrate bKash payment gateway', 'GreenGrocer E-commerce Platform', 'meher@orgos.dev', 'IN_PROGRESS', 'URGENT', 'Core Commerce Development', -8, 10, 24, 'backend,payments', 'Tokenized checkout + webhook reconciliation.'],
     ['POS inventory sync service', 'GreenGrocer E-commerce Platform', 'meher@orgos.dev', 'TODO', 'HIGH', 'Integrations & Data Migration', 6, 18, 30, 'backend,integration', 'Event-driven sync with in-store POS.'],
     ['Migrate 12k SKUs from legacy ERP', 'GreenGrocer E-commerce Platform', 'imran@orgos.dev', 'TODO', 'MEDIUM', 'Integrations & Data Migration', 10, 22, 20, 'data,migration', 'CSV transforms, image mapping, dry-run validation.'],
     ['Loyalty points engine', 'GreenGrocer E-commerce Platform', 'rafi@orgos.dev', 'BACKLOG', 'MEDIUM', 'Integrations & Data Migration', 12, 30, 26, 'frontend,backend', 'Tier rules, expiry, redemption at checkout.'],
-    ['Checkout E2E test suite', 'GreenGrocer E-commerce Platform', 'imran@orgos.dev', 'REVIEW', 'HIGH', 'QA, Launch & Hypercare', -4, 1, 14, 'qa,testing', 'Playwright suite for cart→payment→confirmation.'],
+    ['Checkout E2E test suite', 'GreenGrocer E-commerce Platform', 'imran@orgos.dev', 'REVIEW', 'HIGH', 'QA, Launch & Hypercare', -5, 6, 14, 'qa,testing', 'Playwright suite for cart→payment→confirmation.'],
     ['Staff training videos', 'GreenGrocer E-commerce Platform', 'lubna@orgos.dev', 'BACKLOG', 'LOW', 'QA, Launch & Hypercare', 20, 40, 10, 'content,training', '5 short walkthrough videos for store staff.'],
     ['Go-live runbook', 'GreenGrocer E-commerce Platform', 'farhan@orgos.dev', 'TODO', 'HIGH', 'QA, Launch & Hypercare', 25, 33, 8, 'ops,launch', 'Rollback plan, monitoring checklist, hypercare rota.'],
 
     // EduPath (active, 72%)
     ['Lesson builder rich text editor', 'EduPath Learning Platform', 'rafi@orgos.dev', 'DONE', 'HIGH', 'Content Tools', -40, -25, 24, 'frontend', 'Notion-style editor with media embeds.'],
     ['Bulk content upload (CSV/XLSX)', 'EduPath Learning Platform', 'meher@orgos.dev', 'DONE', 'MEDIUM', 'Content Tools', -30, -14, 18, 'backend', 'Row-level validation and progress reporting.'],
-    ['Parent portal dashboard', 'EduPath Learning Platform', 'rafi@orgos.dev', 'IN_PROGRESS', 'HIGH', 'Content Tools', -8, 6, 20, 'frontend', 'Attendance, grades, fee status cards.'],
-    ['Live class WebRTC tuning', 'EduPath Learning Platform', 'meher@orgos.dev', 'IN_PROGRESS', 'URGENT', 'Content Tools', -5, 2, 22, 'backend,webrtc', 'Adaptive bitrate for weak networks.'],
+    ['Parent portal dashboard', 'EduPath Learning Platform', 'rafi@orgos.dev', 'IN_PROGRESS', 'HIGH', 'Content Tools', -9, 8, 20, 'frontend', 'Attendance, grades, fee status cards.'],
+    ['Live class WebRTC tuning', 'EduPath Learning Platform', 'meher@orgos.dev', 'IN_PROGRESS', 'URGENT', 'Content Tools', -6, 9, 22, 'backend,webrtc', 'Adaptive bitrate for weak networks.'],
     ['Pilot school onboarding plan', 'EduPath Learning Platform', 'maria@orgos.dev', 'TODO', 'HIGH', 'Pilot Testing & Handover', 4, 10, 10, 'pm,planning', 'Two schools, schedules, teacher training sessions.'],
-    ['Accessibility audit (WCAG AA)', 'EduPath Learning Platform', 'tania@orgos.dev', 'REVIEW', 'MEDIUM', 'Pilot Testing & Handover', -3, 0, 12, 'design,a11y', 'Contrast, focus states, screen reader labels.'],
+    ['Accessibility audit (WCAG AA)', 'EduPath Learning Platform', 'tania@orgos.dev', 'REVIEW', 'MEDIUM', 'Pilot Testing & Handover', -4, 5, 12, 'design,a11y', 'Contrast, focus states, screen reader labels.'],
     ['Teacher training deck', 'EduPath Learning Platform', 'lubna@orgos.dev', 'TODO', 'MEDIUM', 'Pilot Testing & Handover', 6, 11, 8, 'content', '40-slide training material with exercises.'],
     ['SLO monitoring dashboard', 'EduPath Learning Platform', 'imran@orgos.dev', 'DONE', 'MEDIUM', 'MVP Build', -60, -35, 16, 'qa,ops', 'Uptime + error-rate alerts wired to Slack.'],
     ['Fix certificate PDF rendering', 'EduPath Learning Platform', 'rafi@orgos.dev', 'DONE', 'LOW', 'MVP Build', -25, -20, 4, 'frontend,bug', 'Bangla text was clipping in generated PDFs.'],
@@ -473,20 +474,20 @@ async function main() {
     ['Post-launch SEO checklist', 'HealthBridge Brand & Website', 'zahin@orgos.dev', 'DONE', 'LOW', 'Website & Booking', -50, -32, 6, 'marketing,seo', 'Sitemaps, meta, schema markup.'],
 
     // UrbanCart (planning)
-    ['Clickable app prototype', 'UrbanCart Mobile App', 'tania@orgos.dev', 'TODO', 'HIGH', 'Discovery & Clickable Prototype', 3, 16, 30, 'design,prototype', 'Figma prototype for investor demo.'],
+    ['Clickable app prototype', 'UrbanCart Mobile App', 'tania@orgos.dev', 'TODO', 'HIGH', 'Discovery & Clickable Prototype', 4, 16, 30, 'design,prototype', 'Figma prototype for investor demo.'],
     ['Technical architecture proposal', 'UrbanCart Mobile App', 'farhan@orgos.dev', 'TODO', 'HIGH', 'Discovery & Clickable Prototype', 5, 15, 14, 'architecture', 'React Native vs Flutter trade-offs.'],
     ['Loyalty wallet concept', 'UrbanCart Mobile App', 'rafi@orgos.dev', 'BACKLOG', 'MEDIUM', 'Discovery & Clickable Prototype', 10, 25, 12, 'mobile,concept', 'Points, streaks and referral hooks.'],
 
     // Marketing site (planning)
-    ['Case study engine wireframes', 'Meridian Marketing Site Revamp', 'tania@orgos.dev', 'TODO', 'MEDIUM', 'Concept & Content Architecture', 10, 24, 12, 'design', 'Reusable case-study blocks.'],
-    ['Agency positioning copy', 'Meridian Marketing Site Revamp', 'lubna@orgos.dev', 'TODO', 'MEDIUM', 'Concept & Content Architecture', 8, 20, 10, 'content', 'Homepage + services narrative.'],
+    ['Case study engine wireframes', 'Meridian Marketing Site Revamp', 'tania@orgos.dev', 'TODO', 'MEDIUM', 'Concept & Content Architecture', 16, 30, 12, 'design', 'Reusable case-study blocks.'],
+    ['Agency positioning copy', 'Meridian Marketing Site Revamp', 'lubna@orgos.dev', 'TODO', 'MEDIUM', 'Concept & Content Architecture', 15, 27, 10, 'content', 'Homepage + services narrative.'],
 
     // Internal / org-level
-    ['Renew SSL certificates (all services)', '', 'imran@orgos.dev', 'TODO', 'HIGH', '', -2, 2, 2, 'ops', 'Expiring in 30 days.'],
-    ['Quarterly OKR planning doc', '', 'maria@orgos.dev', 'IN_PROGRESS', 'MEDIUM', '', -3, 4, 6, 'pm,planning', 'Q4 objectives across all teams.'],
-    ['Update employee handbook (2025)', '', 'nusrat@orgos.dev', 'TODO', 'MEDIUM', '', -10, 12, 8, 'hr,policy', 'Hybrid policy + new leave rules.'],
+    ['Renew SSL certificates (all services)', '', 'imran@orgos.dev', 'TODO', 'HIGH', '', 0, 6, 2, 'ops', 'Expiring in 30 days.'],
+    ['Quarterly OKR planning doc', '', 'maria@orgos.dev', 'IN_PROGRESS', 'MEDIUM', '', -4, 9, 6, 'pm,planning', 'Q4 objectives across all teams.'],
+    ['Update employee handbook (2025)', '', 'nusrat@orgos.dev', 'TODO', 'MEDIUM', '', 0, 14, 8, 'hr,policy', 'Hybrid policy + new leave rules.'],
     ['Prepare Eid campaign brief for clients', '', 'zahin@orgos.dev', 'TODO', 'LOW', '', 2, 9, 5, 'marketing', 'Seasonal campaign one-pager.'],
-    ['Fix time-tracking rounding bug', '', 'meher@orgos.dev', 'BACKLOG', 'LOW', '', -15, 20, 3, 'bug', 'Rounds up to 15m always.'],
+    ['Fix time-tracking rounding bug', '', 'meher@orgos.dev', 'BACKLOG', 'LOW', '', 6, 24, 3, 'bug', 'Rounds up to 15m always.'],
   ]
 
   const taskIds: Record<string, string> = {}
@@ -973,7 +974,7 @@ async function main() {
         type: 'GOVT',
         startDate: new Date(2026, month - 1, day),
         endDate: new Date(2026, month - 1, day + days - 1),
-        description: 'Bangladesh public holiday (2026 template)',
+        description: 'Bangladesh public holiday (2026)',
       })),
     })
   }
@@ -1139,7 +1140,8 @@ async function main() {
     const allowances = m.salaryComponents.filter((c) => c.kind === 'ALLOWANCE').reduce((s, c) => s + c.amount, 0)
     const fixedDeductions = m.salaryComponents.filter((c) => c.kind === 'DEDUCTION').reduce((s, c) => s + c.amount, 0)
     const myAtt = periodAttendance.filter((a) => a.membershipId === m.id)
-    const presentDays = myAtt.filter((a) => a.status === 'PRESENT').length
+    // F1: presentDays counts PRESENT + HALF_DAY — same rule as the payroll API
+    const presentDays = myAtt.filter((a) => a.status === 'PRESENT' || a.status === 'HALF_DAY').length
     const lateDays = myAtt.filter((a) => a.status === 'LATE').length
     const absentDays = myAtt.filter((a) => a.status === 'ABSENT').length
     const unpaidLeaveDays = approvedLeaves
@@ -1237,6 +1239,59 @@ async function main() {
   console.log('✅ Seed complete')
   console.log('   Org 1:', meridian.name, meridian.id)
   console.log('   Org 2:', northwind.name, northwind.id)
+
+  // ============== PROJECT PROGRESS SYNC (T7) ==============
+  // progress must equal round(done/total × 100) of each project's tasks — the
+  // same formula the task API rollups use — so the seeded data is consistent.
+  const allProjects = await db.project.findMany({ select: { id: true } })
+  for (const pr of allProjects) {
+    const [total, done] = await Promise.all([
+      db.task.count({ where: { projectId: pr.id } }),
+      db.task.count({ where: { projectId: pr.id, status: 'DONE' } }),
+    ])
+    await db.project.update({
+      where: { id: pr.id },
+      data: { progress: total > 0 ? Math.round((done / total) * 100) : 0 },
+    })
+  }
+
+  // ============== SAAS PLATFORM BILLING (T6) ==============
+  const planDefs = [
+    ['FREE', 'Free', 'For small teams getting started', 0, 0, 5, 3, 1, 0,
+      ['Up to 5 members', '3 projects', 'Tasks & Kanban board', '1 GB document storage']],
+    ['STARTER', 'Starter', 'For growing teams that need structure', 1500, 15300, 15, 10, 10, 1,
+      ['Up to 15 members', '10 projects', 'CRM pipeline', 'HR & attendance', '10 GB document storage']],
+    ['GROWTH', 'Growth', 'The complete operating system for scaling orgs', 4500, 45900, 50, 50, 50, 2,
+      ['Up to 50 members', '50 projects', 'Recruitment & applicant tracking', 'Payroll & leave automation', 'Advanced reports', '50 GB document storage']],
+    ['BUSINESS', 'Business', 'For orgs that need governance and scale', 9500, 96900, 200, 200, 200, 3,
+      ['Up to 200 members', '200 projects', 'Audit log & access governance', 'Custom roles & module access', 'Priority support', '200 GB document storage']],
+    ['ENTERPRISE', 'Enterprise', 'Dedicated infrastructure and white-glove onboarding', 25000, 255000, 1000, 1000, 1000, 4,
+      ['Unlimited members & projects', 'SSO & SCIM ready', 'Dedicated success manager', 'Custom SLA & uptime', '1 TB document storage']],
+  ] as const
+  const planByCode: Record<string, { id: string; priceMonthly: number; seatLimit: number }> = {}
+  for (const [code, name, description, priceMonthly, priceYearly, seatLimit, projectLimit, storageGb, sortOrder, features] of planDefs) {
+    const p = await db.plan.create({
+      data: { code, name, description, priceMonthly, priceYearly, seatLimit, projectLimit, storageGb, sortOrder, features: JSON.stringify(features) },
+    })
+    planByCode[code] = p
+  }
+  const periodStart = new Date()
+  const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+  await db.subscription.create({
+    data: {
+      orgId: meridian.id, planId: planByCode.GROWTH.id, billingCycle: 'MONTHLY', status: 'ACTIVE',
+      seats: 12, amountMonthly: planByCode.GROWTH.priceMonthly,
+      currentPeriodStart: periodStart, currentPeriodEnd: periodEnd,
+    },
+  })
+  await db.subscription.create({
+    data: {
+      orgId: northwind.id, planId: planByCode.STARTER.id, billingCycle: 'MONTHLY', status: 'ACTIVE',
+      seats: 5, amountMonthly: planByCode.STARTER.priceMonthly,
+      currentPeriodStart: periodStart, currentPeriodEnd: periodEnd,
+    },
+  })
+  console.log('   Plans: 5 · Subscriptions: 2 (Growth, Starter)')
 }
 
 main()

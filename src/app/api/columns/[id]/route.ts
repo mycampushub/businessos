@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, fail, withAuth, requireOrg, body, str, oneOf, logActivity } from '@/lib/server/api'
+import { ok, fail, withAuth, requireOrg, requireRole, body, str, oneOf, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { invalidateColumnCache } from '@/lib/server/columns'
 
@@ -45,11 +45,12 @@ function optBool(v: unknown): boolean | 'invalid' | undefined {
   return typeof v === 'boolean' ? v : 'invalid'
 }
 
-// PATCH /api/columns/[id] — {label?, color?, isDone?, isRejected?} OR {direction:'left'|'right'} (module full)
+// PATCH /api/columns/[id] — {label?, color?, isDone?, isRejected?} OR {direction:'left'|'right'} (OWNER/ADMIN/MANAGER + module full)
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   return withAuth(async (_rq, ctx) => {
     const { org, membership } = requireOrg(ctx)
+    requireRole(ctx, ['ADMIN', 'MANAGER']) // column management (OWNER auto-allowed, mirrors POST /api/columns)
 
     const col = await db.boardColumn.findFirst({ where: { id, orgId: org.id } })
     if (!col) return fail('Column not found', 404)
@@ -122,6 +123,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   return withAuth(async (_rq, ctx) => {
     const { org, membership } = requireOrg(ctx)
+    requireRole(ctx, ['ADMIN', 'MANAGER']) // column management (OWNER auto-allowed, mirrors POST /api/columns)
 
     const col = await db.boardColumn.findFirst({ where: { id, orgId: org.id } })
     if (!col) return fail('Column not found', 404)

@@ -77,7 +77,27 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       await db.$transaction(async (tx) => {
         await tx.payslip.deleteMany({ where: { runId: run.id } })
         if (rows.length) {
-          await tx.payslip.createMany({ data: rows.map((r) => ({ ...r, runId: run.id })) })
+          // explicit field mapping — mirror of the POST path. PayslipComputed carries
+          // transient penalty fields (latePenaltyOccurrences/latePenaltyAmount) that
+          // are NOT Payslip columns; spreading them into createMany raised
+          // PrismaClientValidationError → 500 on every regenerate.
+          await tx.payslip.createMany({
+            data: rows.map((r) => ({
+              runId: run.id,
+              membershipId: r.membershipId,
+              baseSalary: r.baseSalary,
+              allowances: r.allowances,
+              deductions: r.deductions,
+              unpaidLeaveDays: r.unpaidLeaveDays,
+              unpaidLeaveAmount: r.unpaidLeaveAmount,
+              gross: r.gross,
+              net: r.net,
+              presentDays: r.presentDays,
+              absentDays: r.absentDays,
+              lateDays: r.lateDays,
+              breakdown: r.breakdown,
+            })),
+          })
         }
       })
       await logActivity({

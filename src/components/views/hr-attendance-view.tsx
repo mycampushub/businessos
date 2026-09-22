@@ -7,6 +7,7 @@ import { PageHeader, EmptyState } from '@/components/app/page-header'
 import { StatCard } from '@/components/app/stat-card'
 import { StatusBadge } from '@/components/app/status-badge'
 import { UserAvatar } from '@/components/app/user-avatar'
+import { rowClick } from '@/components/app/row-click'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -252,10 +253,10 @@ export default function HrAttendanceView() {
                 {items.map((r) => (
                   <Fragment key={r.id}>
                     <TableRow
-                      className="cursor-pointer"
-                      onClick={() => setExpandedId((cur) => (cur === r.id ? null : r.id))}
+                      className="cursor-pointer focus-visible:bg-muted/60 focus-visible:outline-none"
                       aria-expanded={expandedId === r.id}
                       aria-label={`Sessions for ${r.userName}`}
+                      {...rowClick(() => setExpandedId((cur) => (cur === r.id ? null : r.id)))}
                     >
                       <TableCell>
                         <div className="flex items-center gap-2 sm:gap-3">

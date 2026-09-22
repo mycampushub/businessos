@@ -14,6 +14,7 @@ const ATTENDANCE_STATUSES = ['PRESENT', 'LATE', 'HALF_DAY', 'ABSENT', 'LEAVE', '
 
 // GET /api/hr/attendance?date=YYYY-MM-DD  OR  ?from=YYYY-MM-DD&to=YYYY-MM-DD (default: last 14 days)
 // T3-b: items and myToday now include sessions: SESSION[]; workedMinutes is the daily total.
+// F1: default range + myToday use org-local date keys (server runs UTC).
 // Guard: hr-attendance VIEW (EMPLOYEE default HIDDEN).
 export async function GET(req: NextRequest) {
   return withAuth(async (rq, ctx) => {
@@ -21,6 +22,7 @@ export async function GET(req: NextRequest) {
     const denied = requireAccess(ctx, 'hr-attendance', 'view')
     if (denied) return denied
     const q = rq.nextUrl.searchParams
+    const tz = org.timezone
 
     const dateParam = q.get('date')
     const fromParam = q.get('from')
@@ -35,11 +37,11 @@ export async function GET(req: NextRequest) {
       to = dateParam
     } else {
       const today = new Date()
-      to = toParam && DATE_RE.test(toParam) ? toParam : localDate(today)
+      to = toParam && DATE_RE.test(toParam) ? toParam : localDate(today, tz)
       from =
         fromParam && DATE_RE.test(fromParam)
           ? fromParam
-          : localDate(new Date(today.getTime() - 13 * 24 * 60 * 60 * 1000))
+          : localDate(new Date(today.getTime() - 13 * 24 * 60 * 60 * 1000), tz)
     }
 
     const rows = await db.attendance.findMany({
@@ -56,7 +58,7 @@ export async function GET(req: NextRequest) {
       )
 
     const myTodayRow = await db.attendance.findUnique({
-      where: { membershipId_date: { membershipId: membership.id, date: localDate() } },
+      where: { membershipId_date: { membershipId: membership.id, date: localDate(new Date(), tz) } },
       include: attendanceInclude,
     })
 

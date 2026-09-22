@@ -17,6 +17,7 @@ import {
 } from '@/lib/server/api'
 import { requireAccess, getAccess } from '@/lib/server/access'
 import { getTaskColumns, doneKeys } from '@/lib/server/columns'
+import { assertProjectLimit } from '@/lib/server/billing'
 
 const PROJECT_STATUSES = ['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED', 'ARCHIVED'] as const
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const
@@ -131,6 +132,14 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
   const endDate = optDate(data.endDate)
   const color = data.color ? str(data.color, 'color', { required: false, max: 20 }) : null
 
+  // the project window must be a valid range
+  if (endDate && startOfDayVal(endDate) < startOfDayVal(startDate)) {
+    return fail('End date cannot be before the start date', 422)
+  }
+
+  // plan project limit — throws ApiError(403) which withAuth renders as-is
+  await assertProjectLimit(org.id)
+
   const project = await db.project.create({
     data: {
       orgId: org.id,
@@ -187,3 +196,8 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
     201
   )
 })
+
+/** local-midnight value (project dates are whole days) */
+function startOfDayVal(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}

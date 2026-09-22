@@ -108,8 +108,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const { id } = await params
   return withAuth(async (_req, ctx) => {
     const { membership, org } = requireOrg(ctx)
+    // deletions are reviewer-level: finance-expenses module FULL (mirrors PATCH approve/reject/pay)
+    const denied = requireAccess(ctx, 'finance-expenses', 'full')
+    if (denied) return denied
     const expense = await db.expense.findFirst({ where: { id, orgId: org.id } })
     if (!expense) return fail('Expense not found', 404)
+    // paid expenses are part of the financial record — reject with 409 instead of deleting
+    if (expense.status === 'PAID') return fail('Paid expenses cannot be deleted', 409)
     if (expense.membershipId !== membership.id && !isManagement(ctx)) {
       return fail('Only the expense owner or management can delete it', 403)
     }

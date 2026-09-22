@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server'
+import { randomUUID } from 'crypto'
 import { db } from '@/lib/db'
 import { ok, fail, body, str } from '@/lib/server/api'
 import { hashPassword, createSession, setSessionCookie } from '@/lib/server/auth'
@@ -19,8 +20,10 @@ export async function POST(req: NextRequest) {
     const existing = await db.user.findUnique({ where: { email }, select: { id: true } })
     if (existing) return fail('An account with this email already exists', 409)
 
+    // F3: one-shot email-verification token (no SMTP in sandbox — link surfaced in UI)
+    const emailVerifyToken = randomUUID()
     const user = await db.user.create({
-      data: { name, email, passwordHash: hashPassword(password) },
+      data: { name, email, passwordHash: hashPassword(password), emailVerifyToken },
       select: {
         id: true, email: true, name: true, avatarUrl: true, headline: true,
         phone: true, location: true, bio: true, skills: true,
@@ -31,7 +34,8 @@ export async function POST(req: NextRequest) {
     await setSessionCookie(token)
 
     // SessionInfo shape (fresh user → no memberships yet, no active org → empty access map)
-    return ok({ user, memberships: [], activeOrgId: null, access: {} })
+    // verifyUrl: surfaced in Settings → Security until real email delivery exists.
+    return ok({ user, memberships: [], activeOrgId: null, access: {}, verifyUrl: `/api/auth/verify-email?token=${emailVerifyToken}` })
   } catch (err) {
     const status = (err as { status?: number }).status
     if (typeof status === 'number') return fail(err instanceof Error ? err.message : 'Invalid request', status)

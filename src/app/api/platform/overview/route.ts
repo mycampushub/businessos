@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth } from '@/lib/server/api'
 import { requirePlatform, PLANS } from '../guard'
+import { mrr } from '@/lib/server/billing'
 
 // Local YYYY-MM-DD helper (the sandbox runs in one timezone; matches the attendance convention)
 function localDate(d: Date): string {
@@ -32,6 +33,9 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
     recentUsers,
     recentAudit,
     newUsers,
+    activeSubs,
+    trialingSubs,
+    revenue,
   ] = await Promise.all([
     db.user.count(),
     db.user.count({ where: { status: 'ACTIVE' } }),
@@ -70,6 +74,10 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
       where: { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0) - 13 * 24 * 60 * 60 * 1000) } },
       select: { createdAt: true },
     }),
+    // T6: billing KPIs — live subscriptions + normalized monthly revenue
+    db.subscription.count({ where: { status: { in: ['ACTIVE', 'PAST_DUE'] } } }),
+    db.subscription.count({ where: { status: 'TRIALING' } }),
+    mrr(),
   ])
 
   const planCount = new Map(planGroups.map((g) => [g.plan, g._count._all]))
@@ -106,6 +114,10 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
       storageBytes: storage._sum.size ?? 0,
       meetings,
       activeSessions,
+      activeSubscriptions: activeSubs,
+      trialingSubscriptions: trialingSubs,
+      mrr: revenue,
+      arr: Math.round(revenue * 12 * 100) / 100,
     },
     plans,
     recentUsers: recentUsers.map((u) => ({

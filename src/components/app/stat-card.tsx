@@ -2,6 +2,7 @@
 
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { rowClick } from '@/components/app/row-click'
 import { cn } from '@/lib/utils'
 import type { LucideIcon } from 'lucide-react'
 
@@ -32,7 +33,16 @@ export function StatCard({
     info: 'bg-teal-600/12 text-teal-700 dark:text-teal-300',
   }
   return (
-    <Card className={cn('py-0 transition-shadow', onClick && 'cursor-pointer hover:shadow-md', className)} onClick={onClick}>
+    <Card
+      className={cn(
+        'py-0 transition-shadow',
+        onClick &&
+          'cursor-pointer hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className
+      )}
+      role={onClick ? 'button' : undefined}
+      {...(onClick ? rowClick(onClick) : {})}
+    >
       <CardContent className="flex items-start justify-between gap-3 p-4 sm:p-5">
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>

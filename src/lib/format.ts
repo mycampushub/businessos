@@ -45,14 +45,15 @@ export function fmtTime(d: string | Date | null | undefined): string {
 export function relativeTime(d: string | Date | null | undefined): string {
   if (!d) return '—'
   const date = typeof d === 'string' ? new Date(d) : d
-  const diff = Date.now() - date.getTime()
-  const mins = Math.floor(diff / 60000)
+  const diff = date.getTime() - Date.now() // positive = future
+  const future = diff > 0
+  const mins = Math.floor(Math.abs(diff) / 60000)
   if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 60) return future ? `in ${mins}m` : `${mins}m ago`
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return future ? `in ${hours}h` : `${hours}h ago`
   const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
+  if (days < 7) return future ? `in ${days}d` : `${days}d ago`
   return fmtDate(date)
 }
 

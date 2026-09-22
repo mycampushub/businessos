@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, str, oneOf, logActivity, audit } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { canSeeEmployeePii, maskEmail, maskPhone } from '../employee-helpers'
 
 const MEMBER_ROLES = ['OWNER', 'ADMIN', 'MANAGER', 'HR', 'FINANCE', 'EMPLOYEE', 'CONTRACTOR', 'INTERN'] as const
 const MEMBER_STATUSES = ['ACTIVE', 'ON_LEAVE', 'PROBATION', 'RESIGNED', 'TERMINATED', 'ALUMNI'] as const
@@ -28,15 +29,18 @@ type MemberRow = {
   department: { id: string; name: string } | null
 }
 
-function mapEmployee(m: MemberRow, managerName: string | null) {
+// Contact PII (email/phone) is masked for actors outside PII_ROLES (defense in depth —
+// PATCH itself is already OWNER/ADMIN/HR only).
+function mapEmployee(m: MemberRow, managerName: string | null, canSeePii: boolean) {
+  const phone = m.phone ?? m.user.phone
   return {
     id: m.id,
     userId: m.userId,
     employeeCode: m.employeeCode,
     name: m.user.name,
-    email: m.user.email,
+    email: canSeePii ? m.user.email : maskEmail(m.user.email),
     avatarUrl: m.user.avatarUrl,
-    phone: m.phone ?? m.user.phone,
+    phone: canSeePii ? phone : phone ? maskPhone(phone) : null,
     title: m.title,
     role: m.role,
     status: m.status,
@@ -162,6 +166,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       message: `${ctx.user.name} updated ${updated.user.name}'s employee profile`,
     })
 
-    return ok(mapEmployee(updated, await managerNameFor(org.id, updated.managerId)))
+    return ok(mapEmployee(updated, await managerNameFor(org.id, updated.managerId), canSeeEmployeePii(actor.role)))
   })(req)
 }

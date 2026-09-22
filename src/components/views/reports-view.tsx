@@ -5,6 +5,7 @@ import { useData } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { PageHeader, EmptyState } from '@/components/app/page-header'
 import { StatCard } from '@/components/app/stat-card'
+import { rowClick } from '@/components/app/row-click'
 import { StatusBadge, PriorityDot } from '@/components/app/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -435,7 +436,12 @@ export default function ReportsView() {
                           const total = summary.topClients.reduce((s, x) => s + x.revenue, 0) || 1
                           const pct = Math.round((c.revenue / total) * 100)
                           return (
-                            <TableRow key={c.clientName} className="cursor-pointer transition-colors hover:bg-muted/60" onClick={() => navigate('crm-contacts')}>
+                            <TableRow
+                              key={c.clientName}
+                              className="cursor-pointer transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
+                              aria-label={`Open client ${c.clientName}`}
+                              {...rowClick(() => navigate('crm-contacts'))}
+                            >
                               <TableCell className="font-medium">{c.clientName}</TableCell>
                               <TableCell className="text-right font-medium tabular-nums">{money(c.revenue, currency, true)}</TableCell>
                               <TableCell>
@@ -500,7 +506,12 @@ export default function ReportsView() {
                     </TableHeader>
                     <TableBody>
                       {projects.map((p) => (
-                        <TableRow key={p.id} className="cursor-pointer transition-colors hover:bg-muted/60" onClick={() => navigate('projects', { projectId: p.id })}>
+                        <TableRow
+                          key={p.id}
+                          className="cursor-pointer transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none"
+                          aria-label={`Open project ${p.name}`}
+                          {...rowClick(() => navigate('projects', { projectId: p.id }))}
+                        >
                           <TableCell>
                             <div className="flex flex-col">
                               <span className="font-medium leading-tight">{p.name}</span>
