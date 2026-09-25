@@ -606,6 +606,83 @@ interface NodeProps {
   deptColor: Map<string, string>
 }
 
+/**
+ * M19-fe: WAI-ARIA tree-pattern arrow-key navigation. Both the desktop
+ * (horizontal tree) and mobile (indented list) org-chart nodes share this
+ * handler so the keyboard model is identical. Visible treeitems are discovered
+ * at call time via `document.querySelectorAll('[role="treeitem"]')` — only the
+ * expanded branches are in the DOM (collapsed branches are unrendered), so the
+ * live NodeList is exactly the set of focusable items.
+ *
+ * - ArrowDown / ArrowUp: move focus to the next / previous visible treeitem.
+ * - ArrowRight: expand a collapsed node, otherwise descend to the first child.
+ * - ArrowLeft: collapse an expanded node, otherwise ascend to the parent
+ *   (the nearest preceding treeitem whose aria-level is one less).
+ * - Enter / Space: toggle expand/collapse.
+ */
+function makeTreeItemKeyHandler(opts: {
+  node: OrgNode
+  hasChildren: boolean
+  expanded: boolean
+  toggleNode: (node: OrgNode) => void
+}) {
+  return (ev: React.KeyboardEvent<HTMLElement>) => {
+    if (ev.target !== ev.currentTarget) return // chevron button handles its own keys
+    const { node, hasChildren, expanded, toggleNode } = opts
+    switch (ev.key) {
+      case 'Enter':
+      case ' ': {
+        ev.preventDefault()
+        if (hasChildren) toggleNode(node)
+        return
+      }
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        ev.preventDefault()
+        const items = Array.from(document.querySelectorAll<HTMLElement>('[role="treeitem"]'))
+        const idx = items.indexOf(ev.currentTarget)
+        if (idx === -1) return
+        const next = ev.key === 'ArrowDown' ? items[idx + 1] : items[idx - 1]
+        next?.focus()
+        return
+      }
+      case 'ArrowRight': {
+        ev.preventDefault()
+        if (hasChildren && !expanded) {
+          toggleNode(node)
+          return
+        }
+        // already expanded (or a leaf) → descend to the first child treeitem
+        const items = Array.from(document.querySelectorAll<HTMLElement>('[role="treeitem"]'))
+        const idx = items.indexOf(ev.currentTarget)
+        items[idx + 1]?.focus()
+        return
+      }
+      case 'ArrowLeft': {
+        ev.preventDefault()
+        if (hasChildren && expanded) {
+          toggleNode(node)
+          return
+        }
+        // collapsed / leaf → ascend to the parent treeitem (nearest preceding
+        // node whose aria-level is one less than this one)
+        const items = Array.from(document.querySelectorAll<HTMLElement>('[role="treeitem"]'))
+        const idx = items.indexOf(ev.currentTarget)
+        if (idx === -1) return
+        const myLevel = Number(ev.currentTarget.getAttribute('aria-level') ?? '0')
+        for (let i = idx - 1; i >= 0; i--) {
+          const lvl = Number(items[i].getAttribute('aria-level') ?? '0')
+          if (lvl === myLevel - 1) {
+            items[i].focus()
+            return
+          }
+        }
+        return
+      }
+    }
+  }
+}
+
 function nodeBadges(node: OrgNode, deptColor: Map<string, string>, collapsed: boolean) {
   const e = node.employee
   return (
@@ -643,13 +720,7 @@ function OrgChartNode({ node, isExpanded, toggleNode, deptColor, connected }: No
   const e = node.employee
   const hasChildren = node.children.length > 0
   const expanded = isExpanded(node)
-  const onCardKeyDown = (ev: React.KeyboardEvent<HTMLElement>) => {
-    if (ev.target !== ev.currentTarget) return // the chevron button handles its own keys
-    if (ev.key === 'Enter' || ev.key === ' ') {
-      ev.preventDefault()
-      if (hasChildren) toggleNode(node)
-    }
-  }
+  const onCardKeyDown = makeTreeItemKeyHandler({ node, hasChildren, expanded, toggleNode })
   return (
     <div className={cn('flex flex-col items-center', connected && OC_ITEM_CONNECTED)}>
       <div
@@ -714,13 +785,7 @@ function MobileOrgNode({ node, isExpanded, toggleNode, deptColor }: NodeProps) {
   const e = node.employee
   const hasChildren = node.children.length > 0
   const expanded = isExpanded(node)
-  const onCardKeyDown = (ev: React.KeyboardEvent<HTMLElement>) => {
-    if (ev.target !== ev.currentTarget) return
-    if (ev.key === 'Enter' || ev.key === ' ') {
-      ev.preventDefault()
-      if (hasChildren) toggleNode(node)
-    }
-  }
+  const onCardKeyDown = makeTreeItemKeyHandler({ node, hasChildren, expanded, toggleNode })
   return (
     <div className="flex flex-col gap-2">
       <div

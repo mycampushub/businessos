@@ -14,6 +14,7 @@ import {
   logActivity,
 } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { toCents, fromCents } from '@/lib/server/money'
 
 const EXPERIENCE_LEVELS = ['ENTRY', 'MID', 'SENIOR', 'LEAD'] as const
 const EMPLOYMENT_TYPES = ['FULL_TIME', 'PART_TIME', 'CONTRACT', 'FREELANCE', 'INTERN', 'TEMPORARY', 'VOLUNTEER'] as const
@@ -61,6 +62,9 @@ async function mapSingleJob(orgId: string, j: JobRow) {
   const { department, ...rest } = j
   return {
     ...rest,
+    // C7: salaryMin/salaryMax are now Int cents in the DB — convert to dollars for the API response
+    salaryMin: fromCents(j.salaryMin),
+    salaryMax: fromCents(j.salaryMax),
     departmentName: department?.name ?? null,
     hiringManagerName,
     applicationCount,
@@ -128,8 +132,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (b.employmentType !== undefined) data.employmentType = oneOf(b.employmentType, EMPLOYMENT_TYPES)
     if (b.location !== undefined) data.location = opt(b.location, 120)
     if (b.workMode !== undefined) data.workMode = oneOf(b.workMode, WORK_MODES)
-    if (b.salaryMin !== undefined) data.salaryMin = optNum(b.salaryMin) ?? null
-    if (b.salaryMax !== undefined) data.salaryMax = optNum(b.salaryMax) ?? null
+    // C7: client sends dollars, DB stores cents
+    if (b.salaryMin !== undefined) data.salaryMin = toCents(optNum(b.salaryMin))
+    if (b.salaryMax !== undefined) data.salaryMax = toCents(optNum(b.salaryMax))
     if (b.currency !== undefined) data.currency = opt(b.currency, 8) ?? org.currency
     if (b.deadline !== undefined) data.deadline = optDate(b.deadline) ?? null
     if (b.openings !== undefined) {

@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, num, optNum, optDate, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { dealInclude, decorateDeals, money, clampProb, type DealRow } from './deal-helpers'
+import { toCents } from '@/lib/server/money'
 
 export const GET = withAuth(async (req: NextRequest, ctx) => {
   const { org } = requireOrg(ctx)
@@ -22,7 +23,8 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
   const b = await body(req)
 
   const name = str(b.name, 'name', { max: 200 })
-  const value = num(b.value, 'value', { required: false, min: 0 })
+  // C7: client sends dollars, DB stores cents. Deal.value is Int @default(0) (non-nullable) — coalesce null→0.
+  const value = toCents(num(b.value, 'value', { required: false, min: 0 })) ?? 0
   const probability = clampProb(optNum(b.probability) ?? 20)
 
   let companyId: string | null = null

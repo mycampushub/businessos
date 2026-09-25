@@ -1,16 +1,11 @@
-// OrgOS — Enterprise SaaS schema (Cloudflare Workers / D1 build path)
-// Exact copy of prisma/schema.prisma EXCEPT the generator block below: this
-// variant uses the new `prisma-client` generator with driverAdapters +
-// queryCompiler, emitting a TS client into cloudflare/generated/prisma
-// (gitignored) for the @prisma/adapter-d1 wiring — see
-// cloudflare/snippets/db-d1.ts and cloudflare/README.md.
-// Generate with:  bunx prisma generate --schema cloudflare/schema.workers.prisma
-// The SQL schema itself is identical (cloudflare/migrations/0001_init.sql).
+// OrgOS — Enterprise SaaS schema
+// D1-compatible: string IDs (cuid), no list fields, JSON payloads stored as String.
+// Deploying to Cloudflare D1: generate SQL via
+//   bunx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script
+// (see cloudflare/migrations in this repo)
 
-generator prisma-client {
-  provider        = "prisma-client"
-  output          = "../cloudflare/generated/prisma"
-  previewFeatures = ["driverAdapters", "queryCompiler"]
+generator client {
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -21,29 +16,33 @@ datasource db {
 // ============ IDENTITY ============
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  passwordHash  String
-  name          String
-  avatarUrl     String?
-  headline      String?
-  bio           String?
-  location      String?
-  phone         String?
-  skills        String? // CSV
-  emailVerified DateTime?
-  emailVerifyToken String? // uuid — email verification (no SMTP yet: surfaced in Settings → Security)
-  mfaSecret     String? // base32 TOTP secret
-  mfaEnabled    Boolean   @default(false)
-  platformAdmin Boolean   @default(false) // SaaS platform administrator (org-less console)
-  status        String    @default("ACTIVE") // ACTIVE | SUSPENDED (platform moderation)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id                   String    @id @default(cuid())
+  email                String    @unique
+  passwordHash         String
+  name                 String
+  avatarUrl            String?
+  headline             String?
+  bio                  String?
+  location             String?
+  phone                String?
+  skills               String? // CSV
+  emailVerified        DateTime?
+  emailVerifyToken     String? // uuid — email verification (no SMTP yet: surfaced in Settings → Security)
+  passwordResetToken   String? // uuid — one-shot password reset (no SMTP yet: surfaced in response)
+  passwordResetExpires DateTime? // expiry for password reset token (1 hour)
+  mfaSecret            String? // base32 TOTP secret
+  mfaEnabled           Boolean   @default(false)
+  platformAdmin        Boolean   @default(false) // SaaS platform administrator (org-less console)
+  status               String    @default("ACTIVE") // ACTIVE | SUSPENDED (platform moderation)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  sessions      Session[]
-  memberships   Membership[]
-  notifications Notification[]
-  applications  Application[]
+  sessions             Session[]
+  memberships          Membership[]
+  notifications        Notification[]
+  applications         Application[]
+  ownedOrgs            Organization[] @relation("OrgOwner")
+  impersonatedSessions Session[]      @relation("SessionImpersonator")
 }
 
 model Session {
@@ -52,9 +51,12 @@ model Session {
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt      DateTime
   impersonatedBy String? // platform admin userId when this is a support (impersonation) session
+  // C9 fix: FK relation for impersonatedBy → User (was a plain String with no referential integrity)
+  impersonator   User?    @relation("SessionImpersonator", fields: [impersonatedBy], references: [id], onDelete: SetNull)
   createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-@@index([expiresAt])
+  @@index([expiresAt])
 }
 
 // ============ ORGANIZATION (tenant) ============
@@ -71,11 +73,16 @@ model Organization {
   country     String?
   timezone    String   @default("Asia/Dhaka")
   currency    String   @default("BDT")
-  plan        String   @default("Growth") // Free | Starter | Growth | Business | Enterprise
+  // H13-db fix: store Plan.code (UPPERCASE) instead of Plan.name (Title Case) for consistency.
+  // Default is "GROWTH" (matches Plan.code). Previously stored "Growth" (Plan.name).
+  plan        String   @default("GROWTH") // FREE | STARTER | GROWTH | BUSINESS | ENTERPRISE (matches Plan.code)
   status      String   @default("ACTIVE") // ACTIVE | SUSPENDED (platform moderation)
   foundedYear Int?
   ownerId     String
+  // C9 fix: FK relation for ownerId → User (was a plain String with no referential integrity)
+  owner       User     @relation("OrgOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   memberships    Membership[]
   departments    Department[]
@@ -113,29 +120,33 @@ model Organization {
   salaryComponents   SalaryComponent[]
 
   // SaaS platform billing (T6)
-  subscriptions      Subscription[]
-  billingRequests    BillingRequest[]
+  subscriptions   Subscription[]
+  billingRequests BillingRequest[]
 }
 
 // ============ SAAS PLATFORM BILLING (T6) ============
 
 model Plan {
-  id           String         @id @default(cuid())
-  code         String         @unique // FREE | STARTER | GROWTH | BUSINESS | ENTERPRISE
-  name         String
-  description  String?
-  priceMonthly Float          @default(0) // org currency (BDT)
-  priceYearly  Float          @default(0)
-  currency     String         @default("BDT")
-  seatLimit    Int            @default(5)
-  projectLimit Int            @default(3)
-  storageGb    Int            @default(1)
-  features     String? // JSON array of feature labels
-  isActive     Boolean        @default(true)
-  sortOrder    Int            @default(0)
-  createdAt    DateTime       @default(now())
-  subscriptions Subscription[]
+  id              String           @id @default(cuid())
+  code            String           @unique // FREE | STARTER | GROWTH | BUSINESS | ENTERPRISE
+  name            String
+  description     String?
+  priceMonthly    Int              @default(0) // org currency (BDT)
+  priceYearly     Int              @default(0)
+  currency        String           @default("BDT")
+  seatLimit       Int              @default(5)
+  projectLimit    Int              @default(3)
+  storageGb       Int              @default(1)
+  features        String? // JSON array of feature labels
+  isActive        Boolean          @default(true)
+  sortOrder       Int              @default(0)
+  createdAt       DateTime         @default(now())
+  subscriptions   Subscription[]
   billingRequests BillingRequest[]
+  updatedAt       DateTime         @updatedAt
+
+  // H13-db fix: ensure Plan.name is unique (prevents ambiguity when looking up by name)
+  @@unique([name])
 }
 
 // Tenant-initiated upgrade/renewal request (manual payment confirmation flow —
@@ -148,13 +159,14 @@ model BillingRequest {
   plan          Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
   billingCycle  String       @default("MONTHLY") // MONTHLY | YEARLY
   seats         Int          @default(5)
-  amount        Float        @default(0) // payment due for the period (org currency)
+  amount        Int          @default(0) // payment due for the period, in cents (org currency)
   note          String? // tenant note — e.g. transaction id / reference
   status        String       @default("PENDING") // PENDING | APPROVED | REJECTED
   requestedById String?
   requestedBy   Membership?  @relation("BillingRequestBy", fields: [requestedById], references: [id], onDelete: SetNull)
   decidedAt     DateTime?
   createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   @@index([orgId, status])
 }
@@ -168,14 +180,15 @@ model Subscription {
   billingCycle       String       @default("MONTHLY") // MONTHLY | YEARLY
   status             String       @default("ACTIVE") // TRIALING | ACTIVE | PAST_DUE | CANCELLED | EXPIRED
   seats              Int          @default(5)
-  amountMonthly      Float        @default(0) // normalized monthly amount, org currency
+  amountMonthly      Int          @default(0) // normalized monthly amount, in cents (org currency)
   startedAt          DateTime     @default(now())
   currentPeriodStart DateTime     @default(now())
   currentPeriodEnd   DateTime
   cancelledAt        DateTime?
   createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
-@@index([orgId])
+  @@index([orgId])
 }
 
 model Membership {
@@ -189,6 +202,8 @@ model Membership {
   departmentId     String?
   department       Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   managerId        String? // manager Membership id
+  // C10 fix: self-referential FK relation for managerId → Membership (was a plain String with no referential integrity)
+  manager          Membership?  @relation("MemberManager", fields: [managerId], references: [id], onDelete: SetNull)
   employmentType   String       @default("FULL_TIME") // FULL_TIME | PART_TIME | CONTRACT | FREELANCE | INTERN | TEMPORARY | VOLUNTEER
   status           String       @default("ACTIVE") // ACTIVE | ON_LEAVE | PROBATION | RESIGNED | TERMINATED | ALUMNI
   employeeCode     String?
@@ -196,31 +211,48 @@ model Membership {
   phone            String?
   emergencyContact String? // JSON {name, relation, phone}
   workSchedule     String? // JSON {days:[1..5], start:"09:30", end:"18:30"}
-  baseSalary       Float? // monthly gross, org currency (T3)
+  baseSalary       Int? // monthly gross in cents, org currency (T3) (C7 fix: was Float)
 
-  teamMembers    TeamMember[]
-  projectMembers ProjectMember[]
-  attendances    Attendance[]
-  leaveRequests  LeaveRequest[]
-  activities     ActivityLog[]
-  auditLogs      AuditLog[]
-  crmActivities  CrmActivity[]
-  comments       Comment[]
-  documents      Document[]
-  announcements  Announcement[]
-  meetings       Meeting[]
-  applications   Application[]   @relation("ApplicationProcessor")
-  expenses       Expense[]
+  teamMembers     TeamMember[]
+  projectMembers  ProjectMember[]
+  attendances     Attendance[]
+  leaveRequests   LeaveRequest[]
+  activities      ActivityLog[]
+  auditLogs       AuditLog[]
+  crmActivities   CrmActivity[]
+  comments        Comment[]
+  documents       Document[]
+  announcements   Announcement[]
+  meetings        Meeting[]
+  applications    Application[]    @relation("ApplicationProcessor")
+  expenses        Expense[]
   billingRequests BillingRequest[] @relation("BillingRequestBy")
 
   // T3 additions
   attendanceSessions  AttendanceSession[]
   salaryComponents    SalaryComponent[]
   payslips            Payslip[]
-  payrollRunsCreated  PayrollRun[]    @relation("PayrollRunCreatedBy")
-  payrollRunsApproved PayrollRun[]    @relation("PayrollRunApprovedBy")
+  payrollRunsCreated  PayrollRun[]         @relation("PayrollRunCreatedBy")
+  payrollRunsApproved PayrollRun[]         @relation("PayrollRunApprovedBy")
+  // C10 fix: back-relation for the self-referential manager hierarchy
+  directReports       Membership[]         @relation("MemberManager")
+  // H12-db fix: back-relation for meeting participants join table
+  meetingParticipants MeetingParticipant[]
+  // M26-db back-relations for FK columns
+  assignedTasks       Task[]               @relation("TaskAssignee")
+  createdTasks        Task[]               @relation("TaskCreator")
+  ownedLeads          Lead[]               @relation("LeadOwner")
+  ownedDeals          Deal[]               @relation("DealOwner")
+  managedJobs         Job[]                @relation("JobHiringManager")
+  managedProjects     Project[]            @relation("ProjectManager")
+  approvedExpenses    Expense[]            @relation("ExpenseApprover")
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  deletedAt           DateTime? // M25-db soft-delete
 
   @@unique([userId, orgId])
+  // H8-db fix: index for org-scoped membership queries
+  @@index([orgId, status])
 }
 
 model Department {
@@ -231,11 +263,18 @@ model Department {
   description String?
   color       String? // hex accent for UI
   parentId    String? // self hierarchy
+  // C10 fix: self-referential FK relation for parentId → Department (was a plain String with no referential integrity)
+  parent      Department?  @relation("DeptParent", fields: [parentId], references: [id], onDelete: SetNull)
   createdAt   DateTime     @default(now())
 
   memberships Membership[]
   teams       Team[]
   jobs        Job[]
+  // C10 fix: back-relation for the self-referential department hierarchy
+  children    Department[] @relation("DeptParent")
+  updatedAt   DateTime     @updatedAt
+
+  @@index([orgId])
 }
 
 model Team {
@@ -249,6 +288,9 @@ model Team {
   createdAt    DateTime     @default(now())
 
   teamMembers TeamMember[]
+  updatedAt   DateTime     @updatedAt
+
+  @@index([orgId])
 }
 
 model TeamMember {
@@ -258,6 +300,12 @@ model TeamMember {
   membershipId String
   membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
   role         String? // e.g. "Lead"
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // H7-db fix: prevent duplicate team-member rows from concurrent requests
+  @@unique([teamId, membershipId])
+  @@index([membershipId])
 }
 
 // ============ PROJECTS & TASKS ============
@@ -272,9 +320,10 @@ model Project {
   clientId            String?
   client              Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
   managerMembershipId String?
+  manager             Membership?  @relation("ProjectManager", fields: [managerMembershipId], references: [id], onDelete: SetNull)
   status              String       @default("PLANNING") // PLANNING | ACTIVE | ON_HOLD | COMPLETED | CANCELLED | ARCHIVED
   priority            String       @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
-  budget              Float?
+  budget              Int? // in cents (C7 fix: was Float)
   startDate           DateTime     @default(now())
   endDate             DateTime?
   progress            Int          @default(0) // 0..100
@@ -283,9 +332,11 @@ model Project {
 
   milestones     Milestone[]
   tasks          Task[]
+  wonDeals       Deal[]          @relation("DealProject")
   projectMembers ProjectMember[]
   documents      Document[]
   meetings       Meeting[]
+  updatedAt      DateTime        @updatedAt
 
   @@index([orgId, status])
 }
@@ -297,6 +348,12 @@ model ProjectMember {
   membershipId String
   membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
   role         String? // e.g. "Developer", "Designer"
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // H7-db fix: prevent duplicate project-member rows from concurrent requests
+  @@unique([projectId, membershipId])
+  @@index([membershipId])
 }
 
 model Milestone {
@@ -310,7 +367,11 @@ model Milestone {
   completedAt DateTime?
   createdAt   DateTime  @default(now())
 
-  tasks Task[]
+  tasks     Task[]
+  updatedAt DateTime @updatedAt
+
+  // H9-db fix: index for project detail page milestone queries
+  @@index([projectId])
 }
 
 model Task {
@@ -324,7 +385,9 @@ model Task {
   title                String
   description          String?
   assigneeMembershipId String?
+  assignee             Membership?  @relation("TaskAssignee", fields: [assigneeMembershipId], references: [id], onDelete: SetNull)
   creatorMembershipId  String?
+  creator              Membership?  @relation("TaskCreator", fields: [creatorMembershipId], references: [id], onDelete: SetNull)
   priority             String       @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
   status               String       @default("TODO") // BACKLOG | TODO | IN_PROGRESS | REVIEW | DONE
   startDate            DateTime?
@@ -338,28 +401,34 @@ model Task {
   completedAt          DateTime?
   createdAt            DateTime     @default(now())
 
-  subtasks     Task[]           @relation("TaskSubtasks")
-  parent       Task?            @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  dependencies TaskDependency[] @relation("TaskDepFrom")
-  dependents   TaskDependency[] @relation("TaskDepTo")
-  comments     Comment[]
-  timeEntries  TimeEntry[]
+  subtasks       Task[]             @relation("TaskSubtasks")
+  parent         Task?              @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  dependencies   TaskDependency[]   @relation("TaskDepFrom")
+  dependents     TaskDependency[]   @relation("TaskDepTo")
+  comments       Comment[]
+  timeEntries    TimeEntry[]
   sessionEntries SessionTaskEntry[] // T3
+  updatedAt      DateTime           @updatedAt
+  deletedAt      DateTime? // M25-db soft-delete
 
-@@index([orgId, projectId])
-@@index([orgId, assigneeMembershipId])
-@@index([orgId, status])
+  @@index([orgId, projectId])
+  @@index([orgId, assigneeMembershipId])
+  @@index([orgId, status])
 }
 
 model TaskDependency {
-  id              String @id @default(cuid())
+  id              String   @id @default(cuid())
   taskId          String
-  task            Task   @relation("TaskDepFrom", fields: [taskId], references: [id], onDelete: Cascade)
+  task            Task     @relation("TaskDepFrom", fields: [taskId], references: [id], onDelete: Cascade)
   dependsOnTaskId String
-  dependsOnTask   Task   @relation("TaskDepTo", fields: [dependsOnTaskId], references: [id], onDelete: Cascade)
-  type            String @default("FS") // FS | SS | FF | SF
+  dependsOnTask   Task     @relation("TaskDepTo", fields: [dependsOnTaskId], references: [id], onDelete: Cascade)
+  type            String   @default("FS") // FS | SS | FF | SF
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-@@unique([taskId, dependsOnTaskId])
+  @@unique([taskId, dependsOnTaskId])
+  // H9-db fix: index for reverse dependency lookups
+  @@index([dependsOnTaskId])
 }
 
 model TimeEntry {
@@ -371,6 +440,11 @@ model TimeEntry {
   note         String?
   billable     Boolean  @default(true)
   createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // H9-db fix: indexes for time-entry queries (was zero indexes)
+  @@index([taskId])
+  @@index([membershipId])
 }
 
 model Comment {
@@ -383,11 +457,12 @@ model Comment {
   author             Membership?  @relation(fields: [authorMembershipId], references: [id], onDelete: SetNull)
   body               String
   createdAt          DateTime     @default(now())
-  task               Task?        @relation(fields: [taskId], references: [id])
+  task               Task?        @relation(fields: [taskId], references: [id], onDelete: SetNull)
   taskId             String?
+  updatedAt          DateTime     @updatedAt
 
-@@index([orgId, entityType, entityId])
-@@index([taskId])
+  @@index([orgId, entityType, entityId])
+  @@index([taskId])
 }
 
 model Meeting {
@@ -403,10 +478,29 @@ model Meeting {
   notes                 String?
   createdByMembershipId String?
   createdBy             Membership?  @relation(fields: [createdByMembershipId], references: [id], onDelete: SetNull)
-  participants          String? // CSV of membership ids
+  // H12-db fix: participants moved from CSV String to a proper join table (MeetingParticipant).
+  // The old `participants String?` column is kept for backward compat during migration but is no longer used.
+  participants          String? // DEPRECATED — use MeetingParticipant join table
   createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 
-@@index([orgId, startsAt])
+  meetingParticipants MeetingParticipant[]
+
+  @@index([orgId, startsAt])
+}
+
+// H12-db fix: proper join table for meeting participants (was CSV string, no FK enforcement)
+model MeetingParticipant {
+  id           String     @id @default(cuid())
+  meetingId    String
+  meeting      Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([meetingId, membershipId])
+  @@index([membershipId])
 }
 
 // ============ CRM ============
@@ -422,11 +516,13 @@ model Company {
   notes     String?
   createdAt DateTime     @default(now())
 
-  contacts Contact[]
-  deals    Deal[]
-  clients  Client[]
+  contacts       Contact[]
+  deals          Deal[]
+  clients        Client[]
+  convertedLeads Lead[]    @relation("LeadConvertedCompany") // M26-db back-relation
+  updatedAt      DateTime  @updatedAt
 
-@@index([orgId])
+  @@index([orgId])
 }
 
 model Contact {
@@ -442,8 +538,9 @@ model Contact {
   notes     String?
   createdAt DateTime     @default(now())
   deals     Deal[]
+  updatedAt DateTime     @updatedAt
 
-@@index([orgId])
+  @@index([orgId])
 }
 
 model Client {
@@ -459,10 +556,13 @@ model Client {
   healthNote   String?
   since        DateTime     @default(now())
 
-  projects Project[]
-  invoices Invoice[]
+  projects  Project[]
+  invoices  Invoice[]
+  wonDeals  Deal[]    @relation("DealWonClient") // M26-db back-relation
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-@@index([orgId])
+  @@index([orgId])
 }
 
 model Lead {
@@ -475,14 +575,18 @@ model Lead {
   phone              String?
   source             String       @default("MANUAL") // WEBSITE | REFERRAL | SOCIAL | AD | OUTREACH | EVENT | IMPORT | MANUAL
   status             String       @default("NEW") // NEW | CONTACTED | QUALIFIED | UNQUALIFIED | CONVERTED
-  value              Float?
+  value              Int? // in cents (C7 fix: was Float)
   industry           String?
   notes              String?
   ownerMembershipId  String?
+  owner              Membership?  @relation("LeadOwner", fields: [ownerMembershipId], references: [id], onDelete: SetNull)
   convertedCompanyId String?
+  convertedCompany   Company?     @relation("LeadConvertedCompany", fields: [convertedCompanyId], references: [id], onDelete: SetNull)
   createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
-@@index([orgId])
+  @@index([orgId])
+  @@index([orgId, status])
 }
 
 model PipelineStage {
@@ -494,6 +598,12 @@ model PipelineStage {
   isTerminalWon  Boolean      @default(false)
   isTerminalLost Boolean      @default(false)
   deals          Deal[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  // M23-db fix: prevent duplicate order values within an org (non-deterministic UI sort)
+  @@unique([orgId, order])
+  @@index([orgId])
 }
 
 model Deal {
@@ -501,7 +611,7 @@ model Deal {
   orgId             String
   org               Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   name              String
-  value             Float         @default(0)
+  value             Int           @default(0) // in cents (C7 fix: was Float)
   companyId         String?
   company           Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
   contactId         String?
@@ -512,13 +622,17 @@ model Deal {
   expectedCloseDate DateTime?
   status            String        @default("OPEN") // OPEN | WON | LOST
   ownerMembershipId String?
+  owner             Membership?   @relation("DealOwner", fields: [ownerMembershipId], references: [id], onDelete: SetNull)
   clientId          String? // set when won → client created
+  wonClient         Client?       @relation("DealWonClient", fields: [clientId], references: [id], onDelete: SetNull)
   projectId         String? // optional linked project after won
+  linkedProject     Project?      @relation("DealProject", fields: [projectId], references: [id], onDelete: SetNull)
   notes             String?
   wonAt             DateTime?
   createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
-@@index([orgId])
+  @@index([orgId])
 }
 
 model CrmActivity {
@@ -535,8 +649,9 @@ model CrmActivity {
   createdById String? // membership id
   createdBy   Membership?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-@@index([orgId, entityId])
+  @@index([orgId, entityId])
 }
 
 // ============ RECRUITMENT (ATS) ============
@@ -556,17 +671,21 @@ model Job {
   employmentType            String       @default("FULL_TIME")
   location                  String?
   workMode                  String       @default("ONSITE") // REMOTE | HYBRID | ONSITE
-  salaryMin                 Float?
-  salaryMax                 Float?
+  salaryMin                 Int? // in cents (C7 fix: was Float)
+  salaryMax                 Int? // in cents (C7 fix: was Float)
   currency                  String       @default("BDT")
   deadline                  DateTime?
   openings                  Int          @default(1)
   visibility                String       @default("PUBLIC") // PUBLIC | PLATFORM | PRIVATE
   status                    String       @default("OPEN") // OPEN | PAUSED | CLOSED
   hiringManagerMembershipId String?
+  hiringManager             Membership?  @relation("JobHiringManager", fields: [hiringManagerMembershipId], references: [id], onDelete: SetNull)
   createdAt                 DateTime     @default(now())
 
   applications Application[]
+  updatedAt    DateTime      @updatedAt
+
+  @@index([orgId, status])
 }
 
 model Application {
@@ -590,9 +709,10 @@ model Application {
   processor               Membership? @relation("ApplicationProcessor", fields: [processedByMembershipId], references: [id], onDelete: SetNull)
   createdAt               DateTime    @default(now())
   decidedAt               DateTime?
+  updatedAt               DateTime    @updatedAt
 
-@@index([jobId])
-@@index([stage])
+  @@index([jobId])
+  @@index([stage])
 }
 
 // ============ HR ============
@@ -611,11 +731,11 @@ model Attendance {
   note          String?
   createdAt     DateTime     @default(now())
 
-  sessions AttendanceSession[] // T3
+  sessions  AttendanceSession[] // T3
+  updatedAt DateTime            @updatedAt
 
   @@unique([membershipId, date])
-
-@@index([orgId, date])
+  @@index([orgId, date])
 }
 
 model LeaveType {
@@ -627,6 +747,10 @@ model LeaveType {
   color         String?
   paid          Boolean        @default(true) // T3
   leaveRequests LeaveRequest[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([orgId])
 }
 
 model LeaveRequest {
@@ -645,8 +769,9 @@ model LeaveRequest {
   approverMembershipId String?
   decidedAt            DateTime?
   createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
 
-@@index([orgId, membershipId])
+  @@index([orgId, membershipId])
 }
 
 // ============ FINANCE ============
@@ -662,18 +787,20 @@ model Invoice {
   dueDate   DateTime
   status    String       @default("DRAFT") // DRAFT | SENT | VIEWED | PARTIALLY_PAID | PAID | OVERDUE | CANCELLED
   items     String // JSON [{description, qty, rate}]
-  subtotal  Float        @default(0)
+  subtotal  Int          @default(0) // in cents (C7 fix: was Float)
   taxRate   Float        @default(0)
-  taxAmount Float        @default(0)
-  discount  Float        @default(0)
-  total     Float        @default(0)
+  taxAmount Int          @default(0) // in cents (C7 fix: was Float)
+  discount  Int          @default(0) // in cents (C7 fix: was Float)
+  total     Int          @default(0) // in cents (C7 fix: was Float)
   notes     String?
   projectId String?
   paidAt    DateTime?
   createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  deletedAt DateTime? // M25-db soft-delete
 
-@@index([orgId, clientId])
-@@index([orgId, status])
+  @@index([orgId, clientId])
+  @@index([orgId, status])
 }
 
 model Expense {
@@ -685,29 +812,36 @@ model Expense {
   projectId    String?
   title        String
   category     String       @default("GENERAL") // GENERAL | TRAVEL | MEALS | SOFTWARE | EQUIPMENT | MARKETING | OFFICE | TRAINING
-  amount       Float
+  amount       Int // in cents (C7 fix: was Float)
   date         DateTime     @default(now())
   status       String       @default("SUBMITTED") // SUBMITTED | MANAGER_APPROVED | FINANCE_APPROVED | PAID | REJECTED
   receiptUrl   String?
   notes        String?
   approvedById String?
+  approvedBy   Membership?  @relation("ExpenseApprover", fields: [approvedById], references: [id], onDelete: SetNull)
   createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime? // M25-db soft-delete — null means active, non-null means deleted (for undo/restore)
 
-@@index([orgId, membershipId])
-@@index([orgId, status])
+  @@index([orgId, membershipId])
+  @@index([orgId, status])
 }
 
 // ============ RBAC / POLICY (T3) ============
 
 model ModuleAccess {
-  id     String       @id @default(cuid())
-  orgId  String
-  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  module String // module id, e.g. 'tasks'
-  role   String // OWNER | ADMIN | MANAGER | HR | FINANCE | EMPLOYEE | CONTRACTOR | INTERN
-  level  String // FULL | VIEW | HIDDEN
+  id        String       @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  module    String // module id, e.g. 'tasks'
+  role      String // OWNER | ADMIN | MANAGER | HR | FINANCE | EMPLOYEE | CONTRACTOR | INTERN
+  level     String // FULL | VIEW | HIDDEN
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   @@unique([orgId, module, role])
+  // M35-db fix: index for the access-matrix lookup (orgId + role)
+  @@index([orgId, role])
 }
 
 model OrgPolicy {
@@ -724,10 +858,12 @@ model OrgPolicy {
   payrollDay      Int          @default(28) // 1..28
 
   // T5: late-arrival penalties (applied in payroll)
-  latePenaltyEnabled  Boolean  @default(false)
-  latePenaltyThreshold Int     @default(3) // lates per month per full penalty occurrence
-  latePenaltyMode     String   @default("HALF_DAY") // HALF_DAY | AMOUNT
-  latePenaltyAmount   Float    @default(500) // per-occurrence deduction when mode=AMOUNT (org currency)
+  latePenaltyEnabled   Boolean  @default(false)
+  latePenaltyThreshold Int      @default(3) // lates per month per full penalty occurrence
+  latePenaltyMode      String   @default("HALF_DAY") // HALF_DAY | AMOUNT
+  latePenaltyAmount    Int      @default(50000) // in cents, default 500 (C7 fix: was Float) // per-occurrence deduction when mode=AMOUNT (org currency)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 // ============ HOLIDAYS (T5) ============
@@ -745,6 +881,7 @@ model Holiday {
   endDate     DateTime // inclusive (single-day = same as startDate)
   description String?
   createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   @@index([orgId, startDate])
 }
@@ -758,7 +895,7 @@ model AttendanceSession {
   membershipId String
   membership   Membership         @relation(fields: [membershipId], references: [id], onDelete: Cascade)
   attendanceId String
-  attendance   Attendance         @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  attendance   Attendance         @relation(fields: [attendanceId], references: [id], onDelete: Restrict) // M24-db fix: protect time-tracking history
   checkIn      DateTime
   checkOut     DateTime?
   minutes      Int?
@@ -766,9 +903,10 @@ model AttendanceSession {
   entries      SessionTaskEntry[]
   createdAt    DateTime           @default(now())
   // NO unique — multiple sessions per day are allowed
+  updatedAt    DateTime           @updatedAt
 
-@@index([orgId, membershipId])
-@@index([attendanceId])
+  @@index([orgId, membershipId])
+  @@index([attendanceId])
 }
 
 model SessionTaskEntry {
@@ -779,6 +917,12 @@ model SessionTaskEntry {
   task      Task?             @relation(fields: [taskId], references: [id], onDelete: SetNull)
   minutes   Int
   note      String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  // H9-db fix: indexes for session-task-entry queries (was zero indexes)
+  @@index([sessionId])
+  @@index([taskId])
 }
 
 // ============ KANBAN COLUMNS (T3) ============
@@ -795,8 +939,11 @@ model BoardColumn {
   isRejected Boolean      @default(false)
   color      String?
   createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
   @@unique([orgId, surface, key])
+  // M23-db fix: prevent duplicate order values within an org+surface
+  @@unique([orgId, surface, order])
 }
 
 // ============ PAYROLL (T3) ============
@@ -816,32 +963,37 @@ model PayrollRun {
   paidAt       DateTime?
   createdAt    DateTime     @default(now())
   payslips     Payslip[]
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime? // M25-db soft-delete — null means active, non-null means deleted (for undo/restore)
 
   @@unique([orgId, period])
+  // M32-db fix: index for "list DRAFT runs in org" query
+  @@index([orgId, status])
 }
 
 model Payslip {
-  id                String       @id @default(cuid())
+  id                String     @id @default(cuid())
   runId             String
-  run               PayrollRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run               PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   membershipId      String
-  membership        Membership   @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  baseSalary        Float        @default(0)
-  allowances        Float        @default(0)
-  deductions        Float        @default(0)
-  unpaidLeaveDays   Int          @default(0)
-  unpaidLeaveAmount Float        @default(0)
-  gross             Float        @default(0)
-  net               Float        @default(0)
+  membership        Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  baseSalary        Int        @default(0) // in cents (C7 fix: was Float)
+  allowances        Int        @default(0) // in cents (C7 fix: was Float)
+  deductions        Int        @default(0) // in cents (C7 fix: was Float)
+  unpaidLeaveDays   Int        @default(0)
+  unpaidLeaveAmount Int        @default(0) // in cents (C7 fix: was Float)
+  gross             Int        @default(0) // in cents (C7 fix: was Float)
+  net               Int        @default(0) // in cents (C7 fix: was Float)
   presentDays       Int?
   absentDays        Int?
   lateDays          Int?
   breakdown         String // JSON [{label, kind: BASE|ALLOWANCE|DEDUCTION, amount}]
-  createdAt         DateTime     @default(now())
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  deletedAt         DateTime? // M25-db soft-delete
 
   @@unique([runId, membershipId])
-
-@@index([membershipId])
+  @@index([membershipId])
 }
 
 model SalaryComponent {
@@ -852,8 +1004,11 @@ model SalaryComponent {
   membership   Membership   @relation(fields: [membershipId], references: [id], onDelete: Cascade)
   label        String
   kind         String       @default("ALLOWANCE") // ALLOWANCE | DEDUCTION
-  amount       Float        @default(0)
+  amount       Int          @default(0) // in cents (C7 fix: was Float)
   createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([orgId, membershipId])
 }
 
 // ============ COLLABORATION / PLATFORM ============
@@ -868,6 +1023,9 @@ model Announcement {
   body               String
   pinned             Boolean      @default(false)
   createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@index([orgId, createdAt])
 }
 
 model Notification {
@@ -882,8 +1040,10 @@ model Notification {
   module    String? // frontend module id to navigate to
   readAt    DateTime?
   createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
-@@index([userId, readAt])
+  @@index([userId, readAt])
+  @@index([orgId, userId, readAt])
 }
 
 model Document {
@@ -901,8 +1061,13 @@ model Document {
   uploadedById String?
   uploadedBy   Membership?  @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
   createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime? // M25-db soft-delete — null means active, non-null means deleted (for undo/restore)
 
-@@index([orgId])
+  @@index([orgId])
+  // M31-db fix: compound indexes for folder + project filtering
+  @@index([orgId, folder])
+  @@index([orgId, projectId])
 }
 
 model ActivityLog {
@@ -916,23 +1081,44 @@ model ActivityLog {
   entityId          String?
   message           String
   createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
-@@index([orgId, entityType, entityId])
-@@index([orgId, createdAt])
+  @@index([orgId, entityType, entityId])
+  @@index([orgId, createdAt])
 }
 
 model AuditLog {
-  id                String       @id @default(cuid())
+  id                String        @id @default(cuid())
   orgId             String? // null = platform-level action
   org               Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
   actorMembershipId String?
-  actor             Membership?  @relation(fields: [actorMembershipId], references: [id], onDelete: SetNull)
+  actor             Membership?   @relation(fields: [actorMembershipId], references: [id], onDelete: SetNull)
   action            String
   entity            String
   entityId          String?
   oldValues         String? // JSON
   newValues         String? // JSON
-  createdAt         DateTime     @default(now())
+  // H6-auth fix: record which platform admin was impersonating the actor (null for normal actions).
+  impersonatedBy    String? // platform admin userId when this action was performed during a support session
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
-@@index([orgId, createdAt])
+  @@index([orgId, createdAt])
+}
+
+// Public marketing site submissions (contact form + newsletter) — T7
+model ContactMessage {
+  id        String   @id @default(cuid())
+  type      String   @default("CONTACT") // CONTACT | NEWSLETTER
+  name      String?
+  email     String
+  company   String?
+  topic     String? // general | sales | support | feedback | partnership
+  message   String?
+  status    String   @default("NEW") // NEW | READ | ARCHIVED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type, status, createdAt])
+  @@index([email])
 }

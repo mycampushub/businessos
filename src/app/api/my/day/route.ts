@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client'
 import { db } from '@/lib/db'
 import { ok, withAuth, requireOrg } from '@/lib/server/api'
 import { getOrgPolicy, minutesFromHHMM } from '@/lib/server/policy'
+import { fromCents0 } from '@/lib/server/money'
 import { localDate, minutesOfDay, sessionInclude, mapSession } from '@/lib/server/attendance'
 import { holidayItem, startOfDay, type HolidayRow } from '@/lib/server/holidays'
 import { addDaysToKey, zonedStartUtc, zonedWeekday } from '@/lib/server/tz'
@@ -237,7 +238,7 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
     enabled: policy.latePenaltyEnabled,
     threshold: policy.latePenaltyThreshold,
     mode: policy.latePenaltyMode,
-    amount: policy.latePenaltyAmount,
+    amount: fromCents0(policy.latePenaltyAmount), // MA-1 #5 fix: convert cents → taka
   }
   const latePenaltyOccurrences = latePolicy.enabled
     ? Math.floor(lateThisMonth / Math.max(1, latePolicy.threshold))

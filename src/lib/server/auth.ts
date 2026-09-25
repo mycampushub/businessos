@@ -30,7 +30,11 @@ export function verifyPassword(password: string, stored: string): boolean {
 // ---------- sessions ----------
 
 /** F3: cookie `secure` flag — set only when the request actually arrived over https
- *  (reverse proxy sets x-forwarded-proto). Plain-http dev keeps working. */
+ *  (reverse proxy sets x-forwarded-proto). Plain-http dev keeps working.
+ *  L18-auth: PRODUCTION REQUIREMENT — the reverse proxy (Caddy/Nginx/Cloudflare) MUST
+ *  set `x-forwarded-proto: https` for all HTTPS requests, otherwise the `secure` flag
+ *  is omitted and session cookies leak over plain HTTP. Verify this header is set in
+ *  production before going live. */
 async function isSecureRequest(): Promise<boolean> {
   try {
     const h = await headers()
@@ -53,9 +57,12 @@ export interface SessionInfo {
   session: { impersonatedBy: { id: string; name: string } | null } | null
 }
 
-export async function createSession(userId: string, impersonatedBy?: string): Promise<string> {
+export async function createSession(userId: string, impersonatedBy?: string, ttlMs?: number): Promise<string> {
   const token = randomUUID() + randomUUID().replace(/-/g, '')
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000)
+  // H7-auth fix: support sessions (impersonation) get a shorter TTL (default 2h) to limit
+  // "god mode" exposure. Regular sessions use the standard 30-day TTL.
+  const ttl = ttlMs ?? SESSION_DAYS * 24 * 60 * 60 * 1000
+  const expiresAt = new Date(Date.now() + ttl)
   await db.session.create({ data: { id: token, userId, expiresAt, impersonatedBy: impersonatedBy ?? null } })
   return token
 }
@@ -86,7 +93,9 @@ export async function getActiveOrgId(): Promise<string | null> {
 export async function setActiveOrgCookie(orgId: string) {
   const jar = await cookies()
   jar.set(ACTIVE_ORG_COOKIE, orgId, {
-    httpOnly: false,
+    // M10-auth fix: set httpOnly: true (was false) — no client code reads this cookie directly;
+    // it's only used by getActiveOrgId() server-side. Defense in depth against XSS.
+    httpOnly: true,
     sameSite: 'lax',
     secure: await isSecureRequest(),
     path: '/',

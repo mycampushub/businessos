@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, oneOf, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
+import { assertSeatLimit } from '@/lib/server/billing'
 
 const STAGES = ['APPLIED', 'SCREENING', 'SHORTLISTED', 'INTERVIEW', 'ASSESSMENT', 'OFFER', 'HIRED', 'REJECTED'] as const
 const ACTIONS = ['hire', 'reject'] as const
@@ -127,6 +128,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
             select: { id: true },
           })
           if (!existingMembership) {
+            // C4 fix: enforce the plan's seat limit before auto-onboarding the hired candidate.
+            await assertSeatLimit(job.orgId)
             // employee code: prefix = org name initials (first letter of each word,
             // uppercase, max 4 chars, fallback 'EMP') + collision-safe sequence —
             // bumped while the code already exists in the org (manual/imported codes)

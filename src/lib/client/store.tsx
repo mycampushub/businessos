@@ -30,6 +30,9 @@ export interface MeShape {
     id: string; email: string; name: string; avatarUrl: string | null; headline: string | null
     phone: string | null; location: string | null; bio: string | null; skills: string | null
     platformAdmin: boolean; status: string
+    /** F3/H7-fe: email verification + MFA state (ISO date string after JSON). */
+    emailVerified: string | null
+    mfaEnabled: boolean
   }
   memberships: Array<{
     id: string; role: string; title: string | null; orgId: string; status: string
@@ -38,6 +41,8 @@ export interface MeShape {
   activeOrgId: string | null
   /** Module access map for the ACTIVE org's role ({} when no active org) — see T3-a. */
   access?: Partial<Record<ModuleId, AccessLevel>>
+  /** F3/H7-fe: present while the account is still unverified — surfaced in Settings → Security. */
+  verifyUrl?: string | null
 }
 
 export interface NotificationItem {

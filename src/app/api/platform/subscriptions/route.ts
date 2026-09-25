@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, body } from '@/lib/server/api'
 import { requirePlatform } from '../guard'
 import { subItem, subInclude, assignSubscription, LIVE_SUB_STATUSES } from '@/lib/server/billing'
+import { fromCents0 } from '@/lib/server/money'
 
 /** GET /api/platform/subscriptions?status=&planCode=&q= — all subscriptions
  *  (newest first). q matches the organization name/slug. */
@@ -34,7 +35,8 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
     db.subscription.count({ where: { status: 'TRIALING' } }),
     db.subscription.aggregate({ where: { status: { in: ['ACTIVE', 'PAST_DUE'] } }, _sum: { amountMonthly: true } }),
   ])
-  const mrr = Math.round((mrv._sum.amountMonthly ?? 0) * 100) / 100
+  // C7: amountMonthly is now Int cents in the DB — convert the MRR sum to dollars for the API response
+  const mrr = fromCents0(mrv._sum.amountMonthly ?? 0)
 
   return ok({ items: subs.map(subItem), kpis: { active, trialing, mrr } })
 })

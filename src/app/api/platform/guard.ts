@@ -11,8 +11,13 @@ export function requirePlatform(ctx: AuthCtx): NextResponse | null {
   return null
 }
 
-export const PLANS = ['Free', 'Starter', 'Growth', 'Business', 'Enterprise'] as const
+// MA-1 #6 fix: use UPPERCASE Plan.code values (matches H13-db convention — Organization.plan stores codes)
+export const PLANS = ['FREE', 'STARTER', 'GROWTH', 'BUSINESS', 'ENTERPRISE'] as const
 export const PLAN_SET = new Set<string>(PLANS)
+/** Title-case display labels for the platform console UI */
+export const PLAN_LABELS: Record<string, string> = {
+  FREE: 'Free', STARTER: 'Starter', GROWTH: 'Growth', BUSINESS: 'Business', ENTERPRISE: 'Enterprise',
+}
 
 // ---------- platform audit rows ----------
 // Platform mutations write audit rows via db.auditLog.create directly (the audit() helper

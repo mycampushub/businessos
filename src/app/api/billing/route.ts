@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth, requireOrg, requireRole } from '@/lib/server/api'
 import { getOrgPlanLimits, planItem, planSubscriptionCounts, billingRequestInclude, billingRequestItem } from '@/lib/server/billing'
+import { fromCents0 } from '@/lib/server/money'
 
 /** GET /api/billing — the tenant Billing & Plan page in one call.
  *  OWNER/ADMIN only. Deliberately readable for EXPIRED orgs (the 402 write-gate
@@ -46,7 +47,8 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
           cycle: sub.billingCycle,
           status: sub.status,
           seats: sub.seats,
-          amountMonthly: sub.amountMonthly,
+          // C7: amountMonthly is now Int cents in the DB — convert to dollars for the API response
+          amountMonthly: fromCents0(sub.amountMonthly),
           currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
         }
       : null,

@@ -16,6 +16,7 @@ import {
 } from '@/lib/server/api'
 import { requireAccess, getAccess } from '@/lib/server/access'
 import { getTaskColumns, doneKeys, statusOrderMap } from '@/lib/server/columns'
+import { toCents, fromCents, fromCents0 } from '@/lib/server/money'
 
 const PROJECT_STATUSES = ['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED', 'ARCHIVED'] as const
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const
@@ -172,6 +173,8 @@ export async function GET(req: NextRequest, route: RouteParams): Promise<NextRes
 
     return ok({
       ...projectFields,
+      // C7: budget is now Int cents in the DB — convert to dollars for the API response
+      budget: fromCents(projectFields.budget),
       client: project.client ?? null,
       manager,
       managerName: manager?.user.name ?? null,
@@ -188,7 +191,8 @@ export async function GET(req: NextRequest, route: RouteParams): Promise<NextRes
         actorMembershipId: a.actorMembershipId,
         actorName: a.actor?.user.name ?? null,
       })),
-      invoiceTotal: invoiceAgg._sum.total ?? 0,
+      // C7: Invoice.total is Int cents — the aggregate sum is in cents, convert to dollars
+      invoiceTotal: fromCents0(invoiceAgg._sum.total ?? 0),
       taskStats: { total: tasks.length, done, overdue },
     })
   })(req)
@@ -224,7 +228,16 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
     if (data.description !== undefined)
       update.description = data.description === null ? null : str(data.description, 'description', { required: false, max: 4000 })
     if (data.priority !== undefined) update.priority = oneOf(data.priority, PRIORITIES)
-    if (data.budget !== undefined) update.budget = data.budget === null ? null : optNum(data.budget)
+    // C7: client sends dollars, DB stores cents
+    if (data.budget !== undefined) {
+      if (data.budget !== null) {
+        const bv = optNum(data.budget)
+        if (bv !== undefined && bv < 0) return fail('Budget cannot be negative', 422)
+        update.budget = toCents(bv)
+      } else {
+        update.budget = null
+      }
+    }
     if (data.startDate !== undefined) update.startDate = data.startDate === null ? null : optDate(data.startDate)
     if (data.endDate !== undefined) update.endDate = data.endDate === null ? null : optDate(data.endDate)
     if (data.color !== undefined) update.color = data.color === null ? null : str(data.color, 'color', { required: false, max: 20 })
@@ -324,7 +337,7 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
       })
     }
 
-    return ok({ ...updated, client: updated.client ?? null, manager, managerName: manager?.user.name ?? null })
+    return ok({ ...updated, budget: fromCents(updated.budget), client: updated.client ?? null, manager, managerName: manager?.user.name ?? null })
   })(req)
 }
 

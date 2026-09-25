@@ -10,7 +10,7 @@
  * DELETE /api/billing/requests/[id].
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useData, api } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { money, fmtDate, type BadgeTone } from '@/lib/format'
@@ -251,9 +251,19 @@ export default function BillingView() {
   async function onRefresh() {
     setRefreshing(true)
     refresh()
-    // give the fetch a beat before spinning down the icon
-    setTimeout(() => setRefreshing(false), 600)
+    // M21-fe: refreshing is cleared by the effect below once useData's loading
+    // goes false again — i.e. when the fetch actually completes. The previous
+    // `setTimeout(…, 600)` always lasted 600ms regardless of how long the
+    // request took.
   }
+
+  // Tie the refreshing flag to the hook's loading state. On the very first
+  // render loading is true (initial fetch) and refreshing is false — the
+  // guard `refreshing && !loading` ensures we don't touch refreshing when it
+  // was never set.
+  useEffect(() => {
+    if (refreshing && !loading) setRefreshing(false)
+  }, [loading, refreshing])
 
   // =====================================================================
 

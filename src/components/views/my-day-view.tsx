@@ -505,26 +505,31 @@ export default function MyDayView() {
               )}
 
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  onClick={checkIn}
-                  disabled={clocking}
-                  className="min-h-11"
-                  aria-label="Check in for today"
-                >
-                  <LogIn className="mr-1.5 size-4" aria-hidden /> Check in
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setCheckoutOpen(true)}
-                  disabled={clocking || !today.openSession}
-                  className="min-h-11"
-                  aria-label="Check out — closes your open session"
-                >
-                  <LogOut className="mr-1.5 size-4" aria-hidden /> Check out
-                </Button>
+                {today.openSession ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => setCheckoutOpen(true)}
+                    disabled={clocking}
+                    className="min-h-11"
+                    aria-label="Check out — closes your open session"
+                  >
+                    <LogOut className="mr-1.5 size-4" aria-hidden /> Check out
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={checkIn}
+                    disabled={clocking}
+                    className="min-h-11"
+                    aria-label="Check in for today"
+                  >
+                    <LogIn className="mr-1.5 size-4" aria-hidden /> Check in
+                  </Button>
+                )}
               </div>
               <p className="text-xs text-muted-foreground">
-                Every check-in opens a new session — check out to close the latest one and log its task hours.
+                {today.openSession
+                  ? 'You are checked in — check out to close this session and log its task hours.'
+                  : "You haven't checked in yet — check in to start your day."}
               </p>
             </CardContent>
           </Card>

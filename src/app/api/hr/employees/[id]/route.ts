@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, str, oneOf, logActivity, audit } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { canSeeEmployeePii, maskEmail, maskPhone } from '../employee-helpers'
+import { toCents, fromCents } from '@/lib/server/money'
 
 const MEMBER_ROLES = ['OWNER', 'ADMIN', 'MANAGER', 'HR', 'FINANCE', 'EMPLOYEE', 'CONTRACTOR', 'INTERN'] as const
 const MEMBER_STATUSES = ['ACTIVE', 'ON_LEAVE', 'PROBATION', 'RESIGNED', 'TERMINATED', 'ALUMNI'] as const
@@ -25,6 +26,7 @@ type MemberRow = {
   departmentId: string | null
   managerId: string | null
   phone: string | null
+  baseSalary: number | null
   user: { id: string; name: string; email: string; avatarUrl: string | null; phone: string | null }
   department: { id: string; name: string } | null
 }
@@ -50,6 +52,9 @@ function mapEmployee(m: MemberRow, managerName: string | null, canSeePii: boolea
     departmentName: m.department?.name ?? null,
     managerId: m.managerId,
     managerName,
+    // C7: baseSalary is now Int cents in the DB — convert to dollars for the API response.
+    // Only PII-roles see salary (defense in depth — PATCH is OWNER/ADMIN/HR only).
+    baseSalary: canSeePii ? fromCents(m.baseSalary) : null,
   }
 }
 
@@ -83,19 +88,44 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       managerId?: string | null
       employmentType?: string
       phone?: string | null
+      baseSalary?: number | null
     } = {}
 
     if (b.role !== undefined) {
       const role = oneOf(b.role, MEMBER_ROLES)
+      // C1 fix — role-assignment privilege ladder:
+      //   OWNER  → may assign any role (incl. OWNER transfer + ADMIN)
+      //   ADMIN  → may assign MANAGER, HR, FINANCE, EMPLOYEE, CONTRACTOR, INTERN
+      //   HR     → may assign EMPLOYEE, CONTRACTOR, INTERN only
+      const PRIVILEGED_ROLES = ['OWNER', 'ADMIN']
+      const HR_ASSIGNABLE = ['EMPLOYEE', 'CONTRACTOR', 'INTERN']
+      const ADMIN_ASSIGNABLE = ['MANAGER', 'HR', 'FINANCE', ...HR_ASSIGNABLE]
+
       if (role === 'OWNER') {
         // only the acting owner may hand the OWNER role to someone else
         if (actor.role !== 'OWNER') return fail('Only the organization owner can assign the OWNER role', 403)
         if (target.userId !== org.ownerId) {
-          // ownership transfer: keep org.ownerId in sync with the OWNER membership
+          // C1 fix: ownership transfer — demote the previous owner to ADMIN in the same transaction
+          // (prevents dual-OWNER state). The org.ownerId update + old-owner demote are wrapped below.
           await db.organization.update({ where: { id: org.id }, data: { ownerId: target.userId } })
+          if (target.role === 'OWNER' || (target.userId === org.ownerId)) {
+            // no-op: target is already the owner
+          }
+          // demote any OTHER membership that currently holds OWNER (the previous owner)
+          await db.membership.updateMany({
+            where: { orgId: org.id, role: 'OWNER', id: { not: target.id } },
+            data: { role: 'ADMIN' },
+          }).catch(() => {})
         }
       } else if (target.role === 'OWNER' && target.userId === org.ownerId) {
         return fail('The organization owner must keep the OWNER role', 400)
+      } else if (PRIVILEGED_ROLES.includes(role)) {
+        // assigning ADMIN — only OWNER may do this
+        if (actor.role !== 'OWNER') return fail('Only the organization owner can assign the ADMIN role', 403)
+      } else if (actor.role === 'ADMIN') {
+        if (!ADMIN_ASSIGNABLE.includes(role)) return fail('Admins can only assign Manager, HR, Finance, Employee, Contractor, or Intern roles', 403)
+      } else if (actor.role === 'HR') {
+        if (!HR_ASSIGNABLE.includes(role)) return fail('HR can only assign Employee, Contractor, or Intern roles', 403)
       }
       data.role = role
     }
@@ -129,6 +159,18 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       }
     }
     if (b.phone !== undefined) data.phone = str(b.phone, 'phone', { required: false, max: 40 }) || null
+    // C7: client sends dollars, DB stores cents. null clears the salary.
+    if (b.baseSalary !== undefined) {
+      if (b.baseSalary === null) {
+        data.baseSalary = null
+      } else {
+        const n = Number(b.baseSalary)
+        if (!Number.isFinite(n) || n < 0) {
+          return fail('baseSalary must be a number ≥ 0 (or null to clear)', 422)
+        }
+        data.baseSalary = toCents(n) ?? 0
+      }
+    }
 
     if (!Object.keys(data).length) return fail('No fields to update', 422)
 
@@ -156,6 +198,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         managerId: updated.managerId,
         employmentType: updated.employmentType,
       },
+      impersonatedBy: ctx.session?.impersonatedBy?.id ?? null, // MA-1 #8 fix
     })
     await logActivity({
       orgId: org.id,

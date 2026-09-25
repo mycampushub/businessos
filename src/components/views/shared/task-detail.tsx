@@ -544,10 +544,24 @@ export function TaskDetailDialog({
 
   async function deleteTask() {
     if (!t) return
+    const taskRef = t
     try {
-      await api(`/api/tasks/${t.id}`, { method: 'DELETE' })
-      toast({ title: 'Task deleted', description: `"${t.title}" was removed` })
-      onDeleted?.(t.id)
+      await api(`/api/tasks/${taskRef.id}`, { method: 'DELETE' })
+      // M15-fe: undo toast — soft-delete allows restore within 5s
+      toast({
+        title: 'Task deleted',
+        description: `"${taskRef.title}" was removed`,
+        duration: 5000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            api(`/api/tasks/${taskRef.id}/restore`, { method: 'POST', silent: true })
+              .then(() => { toast({ title: 'Task restored' }); onDeleted?.(taskRef.id) })
+              .catch(() => toast({ title: 'Could not restore', variant: 'destructive' }))
+          },
+        },
+      })
+      onDeleted?.(taskRef.id)
       onOpenChange(false)
     } catch { /* api() toasts */ }
   }

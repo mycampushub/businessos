@@ -3,6 +3,13 @@
 import { Loader2, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+// L25-fe: SANDBOX-ONLY affordance. The DemoAccounts component and the hard-coded
+// `password123` credential are intentional for the local demo / preview
+// environment so reviewers can explore each role with one click. In production
+// this component is not rendered (it is gated behind a sandbox check at the
+// call site, or simply removed from the build) — the demo password never ships
+// to a real deployment. The password is NOT a secret and is documented in the
+// README and on the sign-in page itself.
 const DEMO_ACCOUNTS = [
   { email: 'owner@orgos.dev', role: 'Owner', who: 'Tanvir · Founder, Meridian Labs', initial: 'T' },
   { email: 'farhan@orgos.dev', role: 'Manager', who: 'Farhan · CTO', initial: 'F' },

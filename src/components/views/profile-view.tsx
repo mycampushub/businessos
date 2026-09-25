@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, useData } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { PageHeader, EmptyState } from '@/components/app/page-header'
@@ -17,7 +17,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 import { dueLabel, csv, ROLE_LABELS, ROLE_TONE, TASK_STATUS_LABELS, TASK_STATUS_TONE } from '@/lib/format'
-import { Mail, MapPin, Phone, Loader2, Plus, ListTodo, CheckCircle2 } from 'lucide-react'
+import { Mail, MapPin, Phone, Loader2, Plus, ListTodo, CheckCircle2, Check } from 'lucide-react'
 
 // ---------- local types ----------
 
@@ -47,6 +47,8 @@ export default function ProfileView() {
 
   const [form, setForm] = useState<ProfileForm>({ name: '', headline: '', bio: '', location: '', phone: '', skills: '' })
   const [busy, setBusy] = useState(false)
+  // M16-ui: inline "Saved ✓" indicator next to the Save button.
+  const [saved, setSaved] = useState(false)
   const [orgDialogOpen, setOrgDialogOpen] = useState(false)
 
   const user = me?.user
@@ -64,10 +66,50 @@ export default function ProfileView() {
       skills: u.skills ?? '',
     })
 
+  // M23-fe: only sync the form from `me.user` on initial mount. Re-running this
+  // effect whenever `me.user` changes (e.g. after `refreshMe()` from another
+  // component, or after a server-side update) would overwrite the user's
+  // in-progress edits. Empty-deps array → runs exactly once. The "Reset" button
+  // below calls syncFormFromUser(user) explicitly for the rare case the user
+  // wants to discard their edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const u = me?.user
     if (u) syncFormFromUser(u)
-  }, [me?.user])
+  }, [])
+
+  // M15-ui: dirty flag for the beforeunload guard. Compare the live form values
+  // to the current `me.user` snapshot — after a successful save, `refreshMe()`
+  // updates `me.user` to match the saved form, so dirty goes back to false; if
+  // the user types anything, dirty becomes true; if they Reset, the form is
+  // re-synced to `me.user` and dirty goes back to false.
+  const isDirty = useMemo(() => {
+    if (!user) return false
+    return (
+      form.name !== (user.name ?? '') ||
+      form.headline !== (user.headline ?? '') ||
+      form.bio !== (user.bio ?? '') ||
+      form.location !== (user.location ?? '') ||
+      form.phone !== (user.phone ?? '') ||
+      form.skills !== (user.skills ?? '')
+    )
+  }, [form, user])
+
+  // M15-ui: warn before closing the tab / navigating to an external URL when
+  // there are unsaved edits. In-app sidebar navigation can't be intercepted by
+  // beforeunload — that would need a route blocker — but this minimum-viable
+  // guard catches the most common "discard by accident" paths (close tab,
+  // reload, type a new URL). The `!busy` guard avoids firing during a save.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty && !busy) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isDirty, busy])
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault()
@@ -80,6 +122,9 @@ export default function ProfileView() {
       await api('/api/auth/profile', { method: 'PATCH', body: form })
       await refreshMe()
       toast({ title: 'Profile updated', description: 'Your changes have been saved.' })
+      // M16-ui: flash an inline "Saved ✓" next to the Save button for 2s.
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
     } catch {
       // api() already surfaced the error via toast
     } finally {
@@ -193,6 +238,9 @@ export default function ProfileView() {
                   <Label htmlFor="pf-phone">Phone</Label>
                   <Input
                     id="pf-phone"
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="tel"
                     value={form.phone}
                     onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
                     placeholder="e.g. +880 1XXX-XXXXXX"
@@ -222,7 +270,7 @@ export default function ProfileView() {
                   />
                 </div>
               </div>
-              <div className="flex justify-end gap-2">
+              <div className="flex items-center justify-end gap-2">
                 <Button
                   type="button"
                   variant="outline"
@@ -235,6 +283,16 @@ export default function ProfileView() {
                   {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
                   Save changes
                 </Button>
+                {/* M16-ui: inline "Saved ✓" indicator next to the Save button. */}
+                {saved && (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+                  >
+                    <Check className="size-3.5" aria-hidden /> Saved
+                  </span>
+                )}
               </div>
             </form>
           </CardContent>
@@ -283,7 +341,7 @@ export default function ProfileView() {
                           )}
                         </p>
                         <p className="truncate text-xs text-muted-foreground">
-                          {m.title ?? ROLE_LABELS[m.role] ?? m.role} · {m.org.plan} plan
+                          {m.title ?? ROLE_LABELS[m.role] ?? m.role} · {m.org.plan.charAt(0) + m.org.plan.slice(1).toLowerCase()} plan
                         </p>
                       </div>
                       <StatusBadge label={ROLE_LABELS[m.role] ?? m.role} tone={ROLE_TONE[m.role] ?? 'outline'} dot={false} />

@@ -58,14 +58,17 @@ async function approverNameMap(orgId: string, rows: LeaveRow[]): Promise<Map<str
 }
 
 // GET /api/hr/leave?mine=true — leave requests + org leave types + ctx user's balances
-// Module gate: hr-leave view-minimum (org-wide list and self list alike — an
-// employee's own leave also flows through /api/my, which is not module-gated).
+// DA-H2 fix: non-approver roles (EMPLOYEE, CONTRACTOR, INTERN) are auto-scoped to their own
+// leave requests even without ?mine=true — prevents privacy leak of other employees' leave.
+const APPROVER_ROLES = ['OWNER', 'ADMIN', 'MANAGER', 'HR']
 export async function GET(req: NextRequest) {
   return withAuth(async (rq, ctx) => {
     const { org, membership } = requireOrg(ctx)
     const denied = requireAccess(ctx, 'hr-leave', 'view')
     if (denied) return denied
-    const mine = rq.nextUrl.searchParams.get('mine') === 'true'
+    const mineParam = rq.nextUrl.searchParams.get('mine') === 'true'
+    // DA-H2 fix: force self-scoping for non-approvers
+    const mine = mineParam || !APPROVER_ROLES.includes(membership.role)
 
     const rows = await db.leaveRequest.findMany({
       where: { orgId: org.id, ...(mine ? { membershipId: membership.id } : {}) },
@@ -108,10 +111,24 @@ export async function POST(req: NextRequest) {
     const lt = await db.leaveType.findFirst({ where: { id: leaveTypeId, orgId: org.id } })
     if (!lt) return fail('Leave type not found', 404)
 
-    const startDate = new Date(str(b.startDate, 'startDate'))
-    const endDate = new Date(str(b.endDate, 'endDate'))
+    // M20 fix: strict YYYY-MM-DD format check before parsing — Date will happily
+    // accept a wide range of strings (e.g. "2024-1-2", "2024/01/02", even
+    // "Mar 1 2024"), which would silently mask client-side bugs.
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+    const startDateStr = str(b.startDate, 'startDate')
+    const endDateStr = str(b.endDate, 'endDate')
+    if (!DATE_RE.test(startDateStr)) return fail('Start date must be YYYY-MM-DD', 422)
+    if (!DATE_RE.test(endDateStr)) return fail('End date must be YYYY-MM-DD', 422)
+
+    const startDate = new Date(startDateStr)
+    const endDate = new Date(endDateStr)
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
       return fail('"startDate" and "endDate" must be valid dates', 422)
+    }
+    // M20 fix: prevent an inverted range from silently producing a 0- or negative-day
+    // request (the day-count math relies on this invariant).
+    if (endDateStr < startDateStr) {
+      return fail('End date cannot be before start date', 422)
     }
 
     // T5: days are SERVER-COMPUTED — work days minus weekly holidays (policy) and

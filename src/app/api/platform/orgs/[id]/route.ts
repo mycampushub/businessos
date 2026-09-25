@@ -184,9 +184,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       }
     } else if (b.plan !== undefined) {
       if (typeof b.plan !== 'string' || !b.plan.trim()) return fail('Unknown plan', 422)
-      const planName = b.plan.trim()
-      const plan = await db.plan.findFirst({ where: { name: planName } })
-      if (!plan) return fail(`No plan named "${planName}" exists`, 422)
+      // H13-db fix: accept either Plan.code (UPPERCASE) or Plan.name (Title Case) for convenience
+      const planQuery = b.plan.trim()
+      const plan = await db.plan.findFirst({
+        where: { OR: [{ code: planQuery.toUpperCase() }, { name: planQuery }] },
+      })
+      if (!plan) return fail(`No plan "${planQuery}" exists`, 422)
 
       try {
         await assignSubscription({ orgId: org.id, planCode: plan.code, actorName: ctx.user.name })

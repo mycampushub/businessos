@@ -134,15 +134,27 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       const holidayKeys = holidayDateKeys(orgHolidays)
       let cursor = storedDateKey(lr.startDate)
       const endKey = storedDateKey(lr.endDate)
+      // M23 fix: raise the safety guard from 400 to 366*5 (5 years max). 400 days
+      // silently truncated any leave longer than ~13 months — a sabbatical or
+      // extended parental leave would lose its tail days.
       let guard = 0
-      while (cursor <= endKey && guard < 400) {
+      const guardMax = 366 * 5
+      while (cursor <= endKey && guard < guardMax) {
         const weekday = weekdayOfDateKey(cursor) // 1=Mon..7=Sun
         if (workDays.includes(weekday) && !holidayKeys.has(cursor)) {
           const existing = await db.attendance.findUnique({
             where: { membershipId_date: { membershipId: lr.membershipId, date: cursor } },
             include: { _count: { select: { sessions: true } } },
           })
-          if (!existing || existing._count.sessions === 0) {
+          // M23 fix: only mark LEAVE when there is no row OR the existing row is a
+          // present-style status (PRESENT/LATE/HALF_DAY). Leave ABSENT/LEAVE/HOLIDAY
+          // rows alone — the previous `update: { status: 'LEAVE' }` clobbered
+          // manual absences and pre-stamped holidays, silently rewriting history.
+          if (
+            !existing ||
+            (existing._count.sessions === 0 &&
+              ['PRESENT', 'LATE', 'HALF_DAY'].includes(existing.status))
+          ) {
             await db.attendance.upsert({
               where: { membershipId_date: { membershipId: lr.membershipId, date: cursor } },
               create: { orgId: org.id, membershipId: lr.membershipId, date: cursor, status: 'LEAVE' },

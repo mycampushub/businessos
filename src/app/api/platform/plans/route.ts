@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, body, str, num } from '@/lib/server/api'
 import { requirePlatform, platformAudit } from '../guard'
 import { planItem, planSubscriptionCounts, encodeFeatures } from '@/lib/server/billing'
+import { toCents } from '@/lib/server/money'
 
 /** GET /api/platform/plans — the plan catalog with live subscription counts. */
 export const GET = withAuth(async (_req: NextRequest, ctx) => {
@@ -32,12 +33,16 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
   const existing = await db.plan.findUnique({ where: { code } })
   if (existing) return fail(`A plan with code "${code}" already exists`, 409)
 
-  const priceMonthly = num(data.priceMonthly, 'priceMonthly', { min: 0 })
+  // C7: client sends dollars, DB stores cents. Yearly defaults to monthly × 12 (whole cents) when not supplied.
+  const priceMonthlyRaw = num(data.priceMonthly, 'priceMonthly', { min: 0 })
   const priceYearlyRaw =
     data.priceYearly === undefined || data.priceYearly === null || data.priceYearly === ''
       ? undefined
       : num(data.priceYearly, 'priceYearly', { min: 0 })
-  const priceYearly = priceYearlyRaw ?? Math.round(priceMonthly * 12 * 100) / 100
+  const priceMonthly = toCents(priceMonthlyRaw) ?? 0
+  const priceYearly = priceYearlyRaw !== undefined
+    ? (toCents(priceYearlyRaw) ?? 0)
+    : Math.round(priceMonthlyRaw * 12 * 100)
   const seatLimit = num(data.seatLimit, 'seatLimit', { min: 1, max: 100000 })
   const projectLimit = num(data.projectLimit, 'projectLimit', { min: 1, max: 100000 })
   const storageGb = num(data.storageGb, 'storageGb', { min: 1, max: 100000 })

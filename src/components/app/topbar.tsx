@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import {
   Bell, CheckCheck, LogOut, UserRoundCog, Megaphone, CheckSquare, FolderKanban, CalendarDays, Receipt, Target, Users2, Briefcase, Settings,
   FileText, Users, TrendingUp, Video, Search, Loader2, Sun, Moon,
@@ -239,6 +240,164 @@ function GlobalSearch() {
   )
 }
 
+// ---------- mobile search (M10-ui) ----------
+// The desktop GlobalSearch is `hidden md:block`; on mobile we surface a search
+// icon button that opens a Dialog with the same search input + results list.
+function MobileGlobalSearch() {
+  const { navigate, me } = useWorkspace()
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<SearchItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  // Debounced query — 300ms, only when ≥2 chars; aborts stale requests.
+  useEffect(() => {
+    const query = q.trim()
+    if (query.length < 2) {
+      setResults([])
+      setLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(async () => {
+      setLoading(true)
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { signal: controller.signal })
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean
+          data?: { results?: SearchItem[] }
+          error?: string
+        }
+        if (!res.ok || json.ok === false) throw new Error(json.error ?? 'Search failed')
+        setResults(Array.isArray(json.data?.results) ? json.data.results : [])
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          setResults([])
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }, 300)
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [q])
+
+  // Auto-focus the input when the dialog opens; clear on close.
+  useEffect(() => {
+    if (open) {
+      const t = setTimeout(() => inputRef.current?.focus(), 50)
+      return () => clearTimeout(t)
+    }
+    setQ('')
+    setResults([])
+  }, [open])
+
+  const grouped = useMemo(() => {
+    const order: SearchItem['type'][] = []
+    const map = new Map<SearchItem['type'], SearchItem[]>()
+    for (const r of results) {
+      if (!map.has(r.type)) {
+        map.set(r.type, [])
+        order.push(r.type)
+      }
+      map.get(r.type)!.push(r)
+    }
+    return order.map((type) => ({ type, items: map.get(type)! }))
+  }, [results])
+
+  function choose(item: SearchItem) {
+    navigate(item.module as never, item.params)
+    setOpen(false)
+  }
+
+  // Org-less users have no org data to search — hide the icon entirely.
+  if (!me?.activeOrgId) return null
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-11 md:hidden"
+        aria-label="Search workspace"
+        onClick={() => setOpen(true)}
+      >
+        <Search className="size-4.5" aria-hidden />
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="top-24 max-w-[calc(100%-2rem)] translate-y-0 gap-0 p-0 sm:max-w-md" showCloseButton={false}>
+          <DialogTitle className="sr-only">Search workspace</DialogTitle>
+          <div className="flex items-center gap-2 border-b px-3 py-3">
+            <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <Input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setOpen(false)
+              }}
+              placeholder="Search projects, tasks, people…"
+              aria-label="Search across your workspace"
+              role="combobox"
+              aria-autocomplete="list"
+              className="h-9 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+            />
+            {loading && <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
+          </div>
+          <div className="max-h-80 overflow-y-auto">
+            {q.trim().length < 2 ? (
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                Type at least 2 characters to search.
+              </p>
+            ) : loading && results.length === 0 ? (
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">Searching…</p>
+            ) : results.length === 0 ? (
+              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                No matches for “{q.trim()}”
+              </p>
+            ) : (
+              grouped.map((g) => {
+                const meta = SEARCH_TYPE_META[g.type]
+                const Icon = meta.icon
+                return (
+                  <div key={g.type} role="listbox" aria-label="Search results">
+                    <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      {meta.label}
+                    </p>
+                    {g.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="option"
+                        aria-selected={false}
+                        onClick={() => choose(item)}
+                        className="flex w-full items-center gap-3 py-2.5 pr-4 pl-3 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                      >
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                          <Icon className="size-4" aria-hidden />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium">{item.title}</span>
+                          {item.subtitle && (
+                            <span className="block truncate text-xs text-muted-foreground">{item.subtitle}</span>
+                          )}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 // ---------- dark mode toggle ----------
 
 function ThemeToggle() {
@@ -315,14 +474,18 @@ export function AppTopbar() {
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        {/* M10-ui: mobile-only search icon button → opens a Dialog with the search input. */}
+        <MobileGlobalSearch />
         <ThemeToggle />
 
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative" aria-label={`Notifications (${unreadCount} unread)`}>
+            {/* L18-ui: size-11 meets the 44×44px iOS/WCAG touch target (was 36×36). */}
+            <Button variant="ghost" size="icon" className="size-11 relative" aria-label={`Notifications (${unreadCount} unread)`}>
               <Bell className="size-4.5" />
+              {/* L19-ui: text-[10px] (was text-[9px]) + size-5 (was size-4.5) for legibility. */}
               {unreadCount > 0 && (
-                <span className="absolute -right-0.5 -top-0.5 flex size-4.5 items-center justify-center rounded-full bg-emerald-600 text-[9px] font-bold text-white">
+                <span className="absolute -right-0.5 -top-0.5 flex size-5 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white">
                   {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}

@@ -18,6 +18,7 @@ import {
 import { requireAccess, getAccess } from '@/lib/server/access'
 import { getTaskColumns, doneKeys } from '@/lib/server/columns'
 import { assertProjectLimit } from '@/lib/server/billing'
+import { toCents, fromCents } from '@/lib/server/money'
 
 const PROJECT_STATUSES = ['PLANNING', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED', 'ARCHIVED'] as const
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const
@@ -83,6 +84,8 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
     const manager = p.managerMembershipId ? mgrMap.get(p.managerMembershipId) ?? null : null
     return {
       ...p,
+      // C7: budget is now Int cents in the DB — convert to dollars for the API response
+      budget: fromCents(p.budget),
       client: p.client ?? null,
       manager,
       managerName: manager?.user.name ?? null,
@@ -127,7 +130,10 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
 
   const status = oneOf(data.status, PROJECT_STATUSES, 'PLANNING')
   const priority = oneOf(data.priority, PRIORITIES, 'MEDIUM')
-  const budget = optNum(data.budget)
+  // C7: client sends dollars, DB stores cents
+  const budgetRaw = optNum(data.budget)
+  if (budgetRaw !== undefined && budgetRaw < 0) return fail('Budget cannot be negative', 422)
+  const budget = toCents(budgetRaw)
   const startDate = optDate(data.startDate) ?? new Date()
   const endDate = optDate(data.endDate)
   const color = data.color ? str(data.color, 'color', { required: false, max: 20 }) : null
@@ -188,6 +194,8 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
   return ok(
     {
       ...project,
+      // C7: budget is now Int cents in the DB — convert to dollars for the API response
+      budget: fromCents(project.budget),
       client: project.client ?? null,
       manager,
       managerName: manager?.user.name ?? null,

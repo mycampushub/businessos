@@ -1,11 +1,14 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, fail, withAuth, requireOrg, body, str, num, optDate, oneOf, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
+import { ok, fail, withAuth, requireOrg, body, str, num, optNum, optDate, oneOf, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { toCents, fromCents0 } from '@/lib/server/money'
 
 const EXPENSE_CATEGORIES = ['GENERAL', 'TRAVEL', 'MEALS', 'SOFTWARE', 'EQUIPMENT', 'MARKETING', 'OFFICE', 'TRAINING'] as const
 
-const money = (n: number) => `৳${Math.round(n).toLocaleString('en-US')}`
+// C7 fix: expense.amount is stored in cents. `money` is for log messages and must
+// convert from cents → dollars before formatting.
+const money = (n: number) => `৳${Math.round(fromCents0(n)).toLocaleString('en-US')}`
 
 /** Expense.projectId is a plain column — resolve project names manually (org-scoped). */
 async function decorateExpenses(
@@ -19,6 +22,8 @@ async function decorateExpenses(
   const nameById = new Map(projects.map((p) => [p.id, p.name]))
   return expenses.map((e) => ({
     ...e,
+    // C7 fix: convert amount from cents → dollars for the API response.
+    amount: fromCents0(e.amount as number),
     userName: e.membership?.user?.name ?? null,
     projectName: e.projectId ? nameById.get(e.projectId) ?? null : null,
   }))
@@ -32,10 +37,17 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
       const denied = requireAccess(ctx, 'finance-expenses', 'view')
       if (denied) return denied
     }
+    // H6-fe: optional pagination — defaults to a single page of 50 so the
+    // expenses view can implement a "Load more" pattern. Callers that omit
+    // both params still get a sensible default instead of every record.
+    const limit = Math.max(1, Math.min(500, optNum(req.nextUrl.searchParams.get('limit')) ?? 50))
+    const offset = Math.max(0, optNum(req.nextUrl.searchParams.get('offset')) ?? 0)
     const expenses = await db.expense.findMany({
       where: { orgId: org.id, ...(mine ? { membershipId: membership.id } : {}) },
       orderBy: { date: 'desc' },
       include: { membership: { select: { user: { select: { name: true } } } } },
+      take: limit,
+      skip: offset,
     })
     return ok({ items: await decorateExpenses(org.id, expenses) })
 })
@@ -47,8 +59,10 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
 
     const title = str(b.title, 'title', { max: 200 })
     const category = oneOf(b.category, EXPENSE_CATEGORIES, 'GENERAL')
+    // C7 fix: amount arrives in dollars → convert to cents for DB storage.
     const amount = num(b.amount, 'amount')
     if (amount <= 0) return fail('Amount must be greater than 0', 422)
+    const amountCents = toCents(amount)!
 
     let projectId: string | null = null
     if (typeof b.projectId === 'string' && b.projectId.trim()) {
@@ -63,7 +77,7 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
         membershipId: membership.id,
         title,
         category,
-        amount,
+        amount: amountCents,
         date: optDate(b.date) ?? new Date(),
         projectId,
         notes: b.notes === null || b.notes === undefined ? null : str(b.notes, 'notes', { required: false }) || null,

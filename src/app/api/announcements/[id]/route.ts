@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, str, logActivity } from '@/lib/server/api'
+import { requireAccess } from '@/lib/server/access'
 
 type RouteParams = { params: Promise<{ id: string }> }
 
@@ -13,6 +14,9 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
   const { id } = await route.params
   return withAuth(async (req, ctx) => {
     const { membership, org } = requireOrg(ctx)
+    // DA-M3 fix: module-access gate — blocks users whose announcements access is HIDDEN
+    const denied = requireAccess(ctx, 'announcements', 'full')
+    if (denied) return denied
 
     const announcement = await db.announcement.findFirst({
       where: { id, orgId: org.id },
@@ -67,6 +71,9 @@ export async function DELETE(req: NextRequest, route: RouteParams): Promise<Next
   const { id } = await route.params
   return withAuth(async (_req, ctx) => {
     const { membership, org } = requireOrg(ctx)
+    // DA-M3 fix: module-access gate — blocks users whose announcements access is HIDDEN
+    const denied = requireAccess(ctx, 'announcements', 'full')
+    if (denied) return denied
 
     const announcement = await db.announcement.findFirst({
       where: { id, orgId: org.id },

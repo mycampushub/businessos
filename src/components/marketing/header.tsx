@@ -100,7 +100,7 @@ export function MarketingHeader() {
           <Button
             variant="ghost"
             size="icon"
-            className="sm:hidden"
+            className="size-11 sm:hidden"
             aria-label={open ? 'Close menu' : 'Open menu'}
             aria-expanded={open}
             onClick={() => setOpen((v) => !v)}

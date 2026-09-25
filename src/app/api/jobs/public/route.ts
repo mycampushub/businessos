@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth } from '@/lib/server/api'
+import { fromCents } from '@/lib/server/money'
 
 const INCLUDE = {
   org: { select: { id: true, name: true, logoUrl: true } },
@@ -37,6 +38,9 @@ function mapPublicJob(j: PublicJobRow, applicationCount: number) {
   const { department, ...rest } = j
   return {
     ...rest,
+    // C7: salaryMin/salaryMax are now Int cents in the DB — convert to dollars for the API response
+    salaryMin: fromCents(j.salaryMin),
+    salaryMax: fromCents(j.salaryMax),
     org: { id: j.org.id, name: j.org.name, logoUrl: j.org.logoUrl },
     departmentName: department?.name ?? null,
     applicationCount,

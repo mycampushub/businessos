@@ -1,3 +1,7 @@
+// L30-be: This route is an orphan — no frontend component calls /api/activity.
+// The dashboard already has its own `recentActivities` field via /api/dashboard.
+// Kept for potential future use (e.g., a dedicated activity-feed widget).
+// If wiring up, scope by the same module-access matrix as /api/search.
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth, requireOrg } from '@/lib/server/api'

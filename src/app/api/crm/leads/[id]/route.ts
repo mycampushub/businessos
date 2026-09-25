@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, optNum, oneOf, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { money } from '../../deals/deal-helpers'
+import { toCents, fromCents, fromCents0 } from '@/lib/server/money'
 
 const LEAD_SOURCES = ['WEBSITE', 'REFERRAL', 'SOCIAL', 'AD', 'OUTREACH', 'EVENT', 'IMPORT', 'MANUAL'] as const
 const LEAD_STATUSES = ['NEW', 'CONTACTED', 'QUALIFIED', 'UNQUALIFIED', 'CONVERTED'] as const
@@ -33,7 +34,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const phone = b.phone !== undefined ? str(b.phone, 'phone', { required: false, max: 50 }) || null : undefined
     const source = b.source !== undefined ? oneOf(b.source, LEAD_SOURCES) : undefined
     const status = b.status !== undefined ? oneOf(b.status, LEAD_STATUSES) : undefined
-    const value = b.value !== undefined ? optNum(b.value) ?? null : undefined
+    // C7: client sends dollars, DB stores cents
+    const value = b.value !== undefined ? toCents(optNum(b.value)) : undefined
     const notes = b.notes !== undefined ? (b.notes === null ? null : str(b.notes, 'notes', { required: false }) || null) : undefined
 
     // On conversion, optionally link the company the lead became.
@@ -97,7 +99,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
           data: {
             orgId: org.id,
             name: lead.company?.trim() || lead.name,
-            value: dealValue !== undefined ? Math.max(0, dealValue) : (lead.value ?? 0),
+            // C7: dealValue comes in as dollars from the client; lead.value is already cents in the DB.
+            value: dealValue !== undefined ? Math.max(0, toCents(dealValue) ?? 0) : (lead.value ?? 0),
             companyId: lead.convertedCompanyId,
             stageId: stage.id,
             probability: 20,
@@ -106,7 +109,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
           },
           select: { id: true, name: true, value: true, stage: { select: { name: true } } },
         })
-        createdDeal = { id: deal.id, name: deal.name, value: deal.value, stageName: deal.stage?.name ?? null }
+        // C7: convert cents → dollars for the API response
+        createdDeal = { id: deal.id, name: deal.name, value: fromCents0(deal.value), stageName: deal.stage?.name ?? null }
         await logActivity({
           orgId: org.id,
           actorMembershipId: membership.id,
@@ -144,7 +148,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       })
     }
 
-    return ok({ ...lead, ownerName: await ownerName(org.id, lead.ownerMembershipId), deal: createdDeal })
+    return ok({ ...lead, value: fromCents(lead.value), ownerName: await ownerName(org.id, lead.ownerMembershipId), deal: createdDeal })
   })(req)
 }
 
@@ -156,7 +160,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     if (denied) return denied
     const existing = await db.lead.findFirst({ where: { id, orgId: org.id } })
     if (!existing) return fail('Lead not found', 404)
-    await db.lead.delete({ where: { id } })
+    await db.lead.update({ where: { id }, data: { deletedAt: new Date() } }) // M15-fe soft-delete
     await logActivity({
       orgId: org.id,
       actorMembershipId: membership.id,

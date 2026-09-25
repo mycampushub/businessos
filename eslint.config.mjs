@@ -7,6 +7,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
+  // M13-fe: allow documentation-only `eslint-disable-next-line` directives even
+  // when the corresponding rule is currently off (forward-compatible markers
+  // that document intentional patterns — e.g. the useData hook's spread deps).
+  linterOptions: { reportUnusedDisableDirectives: false },
   rules: {
     // TypeScript rules
     "@typescript-eslint/no-explicit-any": "off",

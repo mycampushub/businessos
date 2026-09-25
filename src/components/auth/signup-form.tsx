@@ -20,6 +20,10 @@ const PASSWORD_CHECKS = [
   { label: 'One number', test: (pw: string) => /\d/.test(pw) },
 ]
 
+// M4-ui: client-side email format check (browsers' `type=email` validation is
+// disabled by `noValidate`, so a regex gate is needed before hitting the API).
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
 export function SignUpForm() {
   const router = useRouter()
   const [name, setName] = useState('')
@@ -46,6 +50,11 @@ export function SignUpForm() {
     e?.preventDefault()
     setError(null)
     if (!name.trim() || !email.trim() || password.length < 8) return
+    // M4-ui: validate email format client-side before kicking off the request.
+    if (!EMAIL_RE.test(email.trim())) {
+      setError('Please enter a valid email address.')
+      return
+    }
     setBusy(true)
     try {
       await api('/api/auth/register', { method: 'POST', body: { name, email, password }, silent: true })
@@ -78,7 +87,7 @@ export function SignUpForm() {
         </p>
 
         <form onSubmit={submit} className="mt-6 flex flex-col gap-4" noValidate>
-          <FormError message={error} />
+          <FormError message={error} id="signup-error" />
 
           <div className="flex flex-col gap-2">
             <Label htmlFor="name">Full name</Label>
@@ -93,6 +102,7 @@ export function SignUpForm() {
                 placeholder="Jane Cooper"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                aria-describedby="signup-error"
                 disabled={busy}
                 maxLength={80}
                 required
@@ -116,6 +126,7 @@ export function SignUpForm() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 aria-invalid={!!error || undefined}
+                aria-describedby="signup-error"
                 disabled={busy}
                 required
                 className="h-11 pl-9"
@@ -130,6 +141,7 @@ export function SignUpForm() {
             placeholder="At least 8 characters"
             invalid={!!error}
             disabled={busy}
+            describedBy="signup-error"
           />
 
           {/* live password checklist */}

@@ -271,7 +271,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           <UserRoundCog className="size-4.5 text-zinc-500" aria-hidden /> My Profile
         </button>
         {role === 'OWNER' && !orgless && (
-          <p className="px-2.5 pt-2 text-[10px] text-zinc-600">Plan: {me?.memberships.find((m) => m.orgId === me?.activeOrgId)?.org.plan ?? 'Free'}</p>
+          <p className="px-2.5 pt-2 text-[10px] text-zinc-600">Plan: {(() => { const p = me?.memberships.find((m) => m.orgId === me?.activeOrgId)?.org.plan; return p ? p.charAt(0) + p.slice(1).toLowerCase() : 'Free' })()}</p>
         )}
       </div>
     </nav>

@@ -684,6 +684,8 @@ export default function SettingsView() {
   })
   const [snapshot, setSnapshot] = useState<ProfileForm>({ ...form })
   const [saving, setSaving] = useState(false)
+  // M16-ui: inline "Saved ✓" indicator next to the Save button.
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     const base: ProfileForm = {
@@ -705,9 +707,28 @@ export default function SettingsView() {
     [form, snapshot]
   )
 
+  // M15-ui: warn before closing the tab / navigating to an external URL when
+  // there are unsaved org-profile edits. Uses the existing `dirtyCount` state
+  // (number of fields differing from the snapshot). The `!saving` guard avoids
+  // firing during a save (the snapshot is updated when the PATCH resolves).
+  // In-app sidebar navigation can't be intercepted by beforeunload — that would
+  // need a route blocker — but this catches the most common discard paths.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (dirtyCount > 0 && !saving) {
+        e.preventDefault()
+        e.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirtyCount, saving])
+
   const setField = (key: keyof ProfileForm, value: string) => setForm((f) => ({ ...f, [key]: value }))
 
-  const save = async () => {
+  const save = async (e?: React.FormEvent) => {
+    // M6-ui: wrap the org-profile fields in a <form> so Enter submits.
+    e?.preventDefault()
     if (!form.name.trim()) {
       toast({ title: 'Name required', description: 'The organization name cannot be empty.', variant: 'destructive' })
       return
@@ -727,6 +748,9 @@ export default function SettingsView() {
       toast({ title: 'Organization updated', description: 'Profile changes have been saved.' })
       setOrgDetail(res.org)
       await refreshMe()
+      // M16-ui: flash an inline "Saved ✓" next to the Save button for 2s.
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
     } catch {
       /* api() already toasts */
     } finally {
@@ -767,138 +791,151 @@ export default function SettingsView() {
             </CardHeader>
             <CardContent className="flex flex-col gap-5">
               {!canEdit && lockNotice('Only owners and admins can edit the organization profile. Contact an administrator for changes.')}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="org-name">Name</Label>
-                  <Input
-                    id="org-name"
-                    value={form.name}
-                    onChange={(e) => setField('name', e.target.value)}
-                    placeholder="Organization name"
-                    disabled={!canEdit || saving}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="org-industry">Industry</Label>
-                  <Input
-                    id="org-industry"
-                    value={form.industry}
-                    onChange={(e) => setField('industry', e.target.value)}
-                    placeholder="e.g. Software & IT"
-                    disabled={!canEdit || saving}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label>Organization type</Label>
-                  <Select
-                    value={form.orgType}
-                    onValueChange={(v) => setField('orgType', v)}
-                    disabled={!canEdit || saving}
-                  >
-                    <SelectTrigger className="w-full" aria-label="Organization type">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ORG_TYPES.map((t) => (
-                        <SelectItem key={t} value={t}>
-                          {t}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="org-website">Website</Label>
-                  <Input
-                    id="org-website"
-                    value={form.website}
-                    onChange={(e) => setField('website', e.target.value)}
-                    placeholder="https://…"
-                    disabled={!canEdit || saving}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="org-country">Country</Label>
-                  <Input
-                    id="org-country"
-                    value={form.country}
-                    onChange={(e) => setField('country', e.target.value)}
-                    placeholder="e.g. Bangladesh"
-                    disabled={!canEdit || saving}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label>Currency</Label>
-                  <Select
-                    value={form.currency}
-                    onValueChange={(v) => setField('currency', v)}
-                    disabled={!canEdit || saving}
-                  >
-                    <SelectTrigger className="w-full" aria-label="Currency">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CURRENCIES.map((c) => (
-                        <SelectItem key={c.code} value={c.code}>
-                          {c.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-2 sm:col-span-2">
-                  <Label>Timezone</Label>
-                  <Select
-                    value={form.timezone}
-                    onValueChange={(v) => setField('timezone', v)}
-                    disabled={!canEdit || saving}
-                  >
-                    <SelectTrigger className="w-full sm:w-72" aria-label="Timezone">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {TIMEZONES.map((tz) => (
-                        <SelectItem key={tz} value={tz}>
-                          {tz}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-2 sm:col-span-2">
-                  <Label htmlFor="org-description">Description</Label>
-                  <Textarea
-                    id="org-description"
-                    rows={3}
-                    value={form.description}
-                    onChange={(e) => setField('description', e.target.value)}
-                    placeholder="What the organization does…"
-                    className="resize-y"
-                    disabled={!canEdit || saving}
-                  />
-                </div>
-              </div>
-              {canEdit && (
-                <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-muted-foreground">
-                    Only changed fields are submitted — untouched fields keep their current values.
-                    {dirtyCount > 0 && <span className="ml-1 font-medium text-foreground">{dirtyCount} pending</span>}
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => setForm(snapshot)}
-                      disabled={saving || dirtyCount === 0}
+              {/* M6-ui: wrap the org-profile fields in a <form> so Enter submits. */}
+              <form onSubmit={save} className="flex flex-col gap-5">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="org-name">Name</Label>
+                    <Input
+                      id="org-name"
+                      value={form.name}
+                      onChange={(e) => setField('name', e.target.value)}
+                      placeholder="Organization name"
+                      disabled={!canEdit || saving}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="org-industry">Industry</Label>
+                    <Input
+                      id="org-industry"
+                      value={form.industry}
+                      onChange={(e) => setField('industry', e.target.value)}
+                      placeholder="e.g. Software & IT"
+                      disabled={!canEdit || saving}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label>Organization type</Label>
+                    <Select
+                      value={form.orgType}
+                      onValueChange={(v) => setField('orgType', v)}
+                      disabled={!canEdit || saving}
                     >
-                      Discard changes
-                    </Button>
-                    <Button onClick={save} disabled={saving || dirtyCount === 0}>
-                      <Save className="size-4" aria-hidden />
-                      {saving ? 'Saving…' : 'Save changes'}
-                    </Button>
+                      <SelectTrigger className="w-full" aria-label="Organization type">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ORG_TYPES.map((t) => (
+                          <SelectItem key={t} value={t}>
+                            {t}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="org-website">Website</Label>
+                    <Input
+                      id="org-website"
+                      value={form.website}
+                      onChange={(e) => setField('website', e.target.value)}
+                      placeholder="https://…"
+                      disabled={!canEdit || saving}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="org-country">Country</Label>
+                    <Input
+                      id="org-country"
+                      value={form.country}
+                      onChange={(e) => setField('country', e.target.value)}
+                      placeholder="e.g. Bangladesh"
+                      disabled={!canEdit || saving}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label>Currency</Label>
+                    <Select
+                      value={form.currency}
+                      onValueChange={(v) => setField('currency', v)}
+                      disabled={!canEdit || saving}
+                    >
+                      <SelectTrigger className="w-full" aria-label="Currency">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CURRENCIES.map((c) => (
+                          <SelectItem key={c.code} value={c.code}>
+                            {c.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:col-span-2">
+                    <Label>Timezone</Label>
+                    <Select
+                      value={form.timezone}
+                      onValueChange={(v) => setField('timezone', v)}
+                      disabled={!canEdit || saving}
+                    >
+                      <SelectTrigger className="w-full sm:w-72" aria-label="Timezone">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TIMEZONES.map((tz) => (
+                          <SelectItem key={tz} value={tz}>
+                            {tz}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:col-span-2">
+                    <Label htmlFor="org-description">Description</Label>
+                    <Textarea
+                      id="org-description"
+                      rows={3}
+                      value={form.description}
+                      onChange={(e) => setField('description', e.target.value)}
+                      placeholder="What the organization does…"
+                      className="resize-y"
+                      disabled={!canEdit || saving}
+                    />
                   </div>
                 </div>
-              )}
+                {canEdit && (
+                  <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      Only changed fields are submitted — untouched fields keep their current values.
+                      {dirtyCount > 0 && <span className="ml-1 font-medium text-foreground">{dirtyCount} pending</span>}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => setForm(snapshot)}
+                        disabled={saving || dirtyCount === 0}
+                      >
+                        Discard changes
+                      </Button>
+                      <Button type="submit" disabled={saving || dirtyCount === 0}>
+                        <Save className="size-4" aria-hidden />
+                        {saving ? 'Saving…' : 'Save changes'}
+                      </Button>
+                      {/* M16-ui: inline "Saved ✓" indicator next to the Save button. */}
+                      {saved && (
+                        <span
+                          role="status"
+                          aria-live="polite"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+                        >
+                          <Check className="size-3.5" aria-hidden /> Saved
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </form>
             </CardContent>
           </Card>
 
@@ -2748,12 +2785,6 @@ const FORM_KEYS: Array<keyof ProfileForm> = [
 
 // ---------- Security section (General tab) — F3 auth hardening ----------
 
-/** GET /api/auth/me security slice (F3 — additive fields). */
-interface SecurityMeShape {
-  user: { emailVerified: string | null; mfaEnabled: boolean }
-  verifyUrl: string | null
-}
-
 interface MfaSetupData {
   secret: string
   otpauthUrl: string
@@ -2773,11 +2804,13 @@ async function copyText(text: string, what: string) {
 }
 
 function SecuritySection() {
-  const securityQ = useData<SecurityMeShape>('/api/auth/me')
-  const me = securityQ.data
+  // H7-fe: use the shared workspace cache for /api/auth/me instead of a
+  // duplicate fetch (WorkspaceProvider already loads it on boot). refreshMe()
+  // updates the shared cache so every consumer sees the new MFA/verified state.
+  const { me, loadingMe, refreshMe } = useWorkspace()
   const verified = !!me?.user.emailVerified
   const mfaEnabled = !!me?.user.mfaEnabled
-  const loading = securityQ.loading
+  const loading = loadingMe
 
   // enable flow
   const [enableOpen, setEnableOpen] = useState(false)
@@ -2836,7 +2869,7 @@ function SecuritySection() {
       })
       setEnableOpen(false)
       resetEnable()
-      securityQ.refresh()
+      void refreshMe()
     } catch {
       /* api() already toasts */
     } finally {
@@ -2855,7 +2888,7 @@ function SecuritySection() {
       toast({ title: 'Two-factor authentication disabled', description: 'Sign-in now needs your password only.' })
       setDisableOpen(false)
       resetDisable()
-      securityQ.refresh()
+      void refreshMe()
     } catch {
       /* api() already toasts */
     } finally {

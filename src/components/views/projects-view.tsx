@@ -6,9 +6,9 @@
  * selected via nav.params.projectId deep-links from the portfolio.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { addDays } from 'date-fns'
-import { api, useData } from '@/lib/client/api'
+import { api, apiForm, useData } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { toast } from '@/hooks/use-toast'
 import {
@@ -32,7 +32,7 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
@@ -165,6 +165,56 @@ function fmtSize(n: number | null): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// M12-fe: client-side mirror of the server MIME allowlist (src/lib/server/storage.ts)
+// — the view cannot import that module directly (it pulls in fs/promises).
+// Mirrors the same constants/validation used in documents-view.tsx so the
+// project-tab upload dialog behaves identically to the Documents module.
+const ALLOWED_MIME_LIST = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+  'text/plain',
+  'text/csv',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/zip',
+  'application/json',
+]
+const ALLOWED_MIME_SET = new Set<string>(ALLOWED_MIME_LIST)
+const MIME_ALIASES: Record<string, string> = {
+  'image/jpg': 'image/jpeg',
+  'application/x-zip-compressed': 'application/zip',
+  'text/x-csv': 'text/csv',
+}
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+  gif: 'image/gif', txt: 'text/plain', csv: 'text/csv', doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  zip: 'application/zip', json: 'application/json',
+}
+const ACCEPT_MIME = ALLOWED_MIME_LIST.join(',')
+const MAX_FILE_BYTES = 25 * 1024 * 1024
+
+/** M13-ui: client-side MIME validation — declared type first, extension fallback
+ *  for browsers that report empty types. Mirrors documents-view.tsx. */
+function isAllowedClientFile(file: File): boolean {
+  const declared = (file.type ?? '').trim().toLowerCase()
+  if (declared) {
+    return ALLOWED_MIME_SET.has(MIME_ALIASES[declared] ?? declared)
+  }
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  return !!MIME_BY_EXTENSION[ext]
+}
+
+const DOC_DEFAULT_FOLDER = '__default__'
+const DOC_NEW_FOLDER = '__new__'
+
 function docIcon(mime: string | null) {
   if (!mime) return File
   if (mime.includes('pdf')) return FileText
@@ -212,10 +262,13 @@ function PortfolioPage() {
   const employees = useData<{ items: EmployeeItem[] }>(createOpen ? '/api/hr/employees' : null)
   const clients = useData<{ items: Array<{ id: string; name: string }> }>(createOpen ? '/api/crm/clients' : null)
   const [creating, setCreating] = useState(false)
-  const [form, setForm] = useState({
+  // H20: extracted EMPTY_FORM so openCreate() can reset the form before
+  // opening the dialog (no stale input carried across close/reopen cycles).
+  const EMPTY_PROJECT_FORM = {
     name: '', code: '', description: '', client: 'none', manager: 'none',
     status: 'PLANNING', priority: 'MEDIUM', budget: '', startDate: '', endDate: '', color: PROJECT_COLORS[0],
-  })
+  }
+  const [form, setForm] = useState(EMPTY_PROJECT_FORM)
 
   const all = projects.data?.items ?? []
   const loading = projects.loading && !projects.data
@@ -264,11 +317,18 @@ function PortfolioPage() {
       })
       toast({ title: 'Project created', description: `${created.name} is ready` })
       setCreateOpen(false)
-      setForm({ name: '', code: '', description: '', client: 'none', manager: 'none', status: 'PLANNING', priority: 'MEDIUM', budget: '', startDate: '', endDate: '', color: PROJECT_COLORS[0] })
+      setForm({ ...EMPTY_PROJECT_FORM })
       navigate('projects', { projectId: created.id })
     } catch { /* api() toasts */ } finally {
       setCreating(false)
     }
+  }
+
+  // H20: openCreate resets the form before opening the dialog so stale input
+  // from a previous open is never carried over to a fresh create session.
+  function openCreate() {
+    setForm({ ...EMPTY_PROJECT_FORM })
+    setCreateOpen(true)
   }
 
   return (
@@ -279,9 +339,7 @@ function PortfolioPage() {
         icon={FolderKanban}
         actions={canCreate && (
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button className="h-11 gap-2"><Plus className="size-4" aria-hidden /> New project</Button>
-            </DialogTrigger>
+            <Button className="h-11 gap-2" onClick={openCreate}><Plus className="size-4" aria-hidden /> New project</Button>
             <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>New project</DialogTitle>
@@ -430,7 +488,7 @@ function PortfolioPage() {
           title="No projects yet"
           description={canCreate ? 'Create your first project to start tracking work.' : 'Projects will appear here once they are created.'}
           action={canCreate && (
-            <Button className="h-11 gap-2" onClick={() => setCreateOpen(true)}>
+            <Button className="h-11 gap-2" onClick={openCreate}>
               <Plus className="size-4" aria-hidden /> New project
             </Button>
           )}
@@ -514,19 +572,28 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
   const [saving, setSaving] = useState(false)
   const [editForm, setEditForm] = useState({ name: '', description: '', status: '', priority: '', progress: '', budget: '', endDate: '' })
 
-  const [msForm, setMsForm] = useState({ title: '', description: '', dueDate: '' })
+  // H20: extracted empty-form constants so the openCreate* helpers can reset
+  // stale input before opening the dialog (no form-state leak across reopens).
+  const EMPTY_MS_FORM = { title: '', description: '', dueDate: '' }
+  const [msForm, setMsForm] = useState(EMPTY_MS_FORM)
   const [msOpen, setMsOpen] = useState(false)
   const [msEdit, setMsEdit] = useState<{ id: string; title: string; description: string; dueDate: string; status: string } | null>(null)
 
-  const [taskForm, setTaskForm] = useState({
+  const EMPTY_TASK_FORM = {
     title: '', assignee: 'none', milestone: 'none', priority: 'MEDIUM', dueDate: '',
     startDate: '', est: '', description: '', deps: [] as string[],
-  })
+  }
+  const [taskForm, setTaskForm] = useState(EMPTY_TASK_FORM)
   const [taskOpen, setTaskOpen] = useState(false)
   const [addColumnOpen, setAddColumnOpen] = useState(false)
 
-  const [docForm, setDocForm] = useState({ name: '', folder: 'General', mimeType: '', size: '' })
+  // M12-fe: real-file upload (mirrors documents-view). folderChoice is the
+  // __default__/__new__ sentinel pattern, name auto-fills from the picked file.
+  const EMPTY_DOC_FORM = { name: '', folderChoice: DOC_DEFAULT_FOLDER, newFolder: '' }
+  const [docForm, setDocForm] = useState(EMPTY_DOC_FORM)
   const [docOpen, setDocOpen] = useState(false)
+  const [docFile, setDocFile] = useState<File | null>(null)
+  const [docFileError, setDocFileError] = useState<string | null>(null)
 
   const [taskFilterStatus, setTaskFilterStatus] = useState('all')
   const [taskFilterAssignee, setTaskFilterAssignee] = useState('all')
@@ -610,37 +677,19 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
     return items
   }, [p, projectTasks, doneKeys, colItems])
 
-  // dependency link types (FS/SS/FF/SF) for the gantt connectors — fetched once
-  // (in parallel) for the tasks that actually have dependencies
-  const [depTypes, setDepTypes] = useState<Record<string, string>>({})
-  const depTaskKey = useMemo(
-    () => projectTasks.filter((t) => (t.dependsOn?.length ?? 0) > 0).map((t) => t.id).join(','),
-    [projectTasks]
+  // dependency link types (FS/SS/FF/SF) for the gantt connectors — fetched in
+  // a SINGLE request via the batch endpoint /api/projects/[id]/dependencies
+  // (H5-fe fix: replaces the previous N+1 Promise.all of one request per task).
+  const depsQ = useData<{ items: Array<{ taskId: string; dependsOnTaskId: string; type: string }> }>(
+    p ? `/api/projects/${p.id}/dependencies` : null
   )
-  useEffect(() => {
-    const ids = depTaskKey.split(',').filter(Boolean)
-    if (!ids.length) {
-      setDepTypes({})
-      return
+  const depTypes = useMemo<Record<string, string>>(() => {
+    const map: Record<string, string> = {}
+    for (const e of depsQ.data?.items ?? []) {
+      map[`${e.taskId}:${e.dependsOnTaskId}`] = e.type
     }
-    let cancelled = false
-    void Promise.all(ids.map(async (id) => {
-      try {
-        const res = await api<{ dependencies: Array<{ dependsOnTaskId: string; type: string }> }>(
-          `/api/tasks/${id}/dependencies`,
-          { silent: true }
-        )
-        return res.dependencies.map((d) => [`${id}:${d.dependsOnTaskId}`, d.type] as const)
-      } catch {
-        return [] as Array<readonly [string, string]>
-      }
-    })).then((rows) => {
-      if (!cancelled) setDepTypes(Object.fromEntries(rows.flat()))
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [depTaskKey])
+    return map
+  }, [depsQ.data])
 
   const ganttLinks = useMemo(() => {
     const links: GanttLink[] = []
@@ -781,7 +830,7 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
       })
       toast({ title: 'Milestone added', description: msForm.title.trim() })
       setMsOpen(false)
-      setMsForm({ title: '', description: '', dueDate: '' })
+      setMsForm({ ...EMPTY_MS_FORM })
       detail.refresh()
     } catch { /* api() toasts */ } finally {
       setSaving(false)
@@ -852,32 +901,55 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
       })
       toast({ title: 'Task created', description: `"${created.title}" added to the board` })
       setTaskOpen(false)
-      setTaskForm({ title: '', assignee: 'none', milestone: 'none', priority: 'MEDIUM', dueDate: '', startDate: '', est: '', description: '', deps: [] })
+      setTaskForm({ ...EMPTY_TASK_FORM })
       detail.refresh()
     } catch { /* api() toasts */ } finally {
       setSaving(false)
     }
   }
 
+  // M12-fe: real upload — same apiForm pattern as documents-view.tsx. The
+  // projectId is implicit (this is the project detail page) and is appended
+  // to the FormData so the file is auto-linked to this project.
   async function addDocument() {
-    if (!docForm.name.trim()) return
+    const folderName =
+      docForm.folderChoice === DOC_NEW_FOLDER
+        ? docForm.newFolder.trim()
+        : docForm.folderChoice === DOC_DEFAULT_FOLDER
+          ? 'General'
+          : docForm.folderChoice || 'General'
+    if (docForm.folderChoice === DOC_NEW_FOLDER && !folderName) {
+      toast({ title: 'Folder name required', description: 'Enter a name for the new folder.', variant: 'destructive' })
+      return
+    }
+    const name = docForm.name.trim()
+    if (!name) {
+      toast({ title: 'Name required', description: 'Give the document a file name.', variant: 'destructive' })
+      return
+    }
+    if (!docFile) {
+      toast({ title: 'File required', description: 'Choose a file to upload first.', variant: 'destructive' })
+      return
+    }
+    if (docFile.size > MAX_FILE_BYTES) {
+      toast({ title: 'File too large', description: 'Maximum upload size is 25 MB.', variant: 'destructive' })
+      return
+    }
     setSaving(true)
     try {
-      await api('/api/documents', {
-        method: 'POST',
-        body: {
-          name: docForm.name.trim(),
-          folder: docForm.folder || 'General',
-          projectId,
-          mimeType: docForm.mimeType.trim() || undefined,
-          size: docForm.size ? Math.round(Number(docForm.size) * 1024) : undefined, // KB → bytes
-        },
-      })
-      toast({ title: 'File registered', description: `${docForm.name.trim()} added to the project folder` })
+      const fd = new FormData()
+      fd.append('file', docFile)
+      fd.append('name', name)
+      fd.append('folder', folderName)
+      fd.append('projectId', projectId)
+      await apiForm('/api/documents', fd)
+      toast({ title: 'File uploaded', description: `${name} (${fmtSize(docFile.size)}) stored in ${folderName}.` })
       setDocOpen(false)
-      setDocForm({ name: '', folder: 'General', mimeType: '', size: '' })
+      setDocForm({ ...EMPTY_DOC_FORM })
+      setDocFile(null)
+      setDocFileError(null)
       documents.refresh()
-    } catch { /* api() toasts */ } finally {
+    } catch { /* apiForm() toasts */ } finally {
       setSaving(false)
     }
   }
@@ -888,6 +960,23 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
       toast({ title: 'File deleted' })
       documents.refresh()
     } catch { /* api() toasts */ }
+  }
+
+  // H20: openCreate* helpers reset their respective form before opening the
+  // dialog so stale input from a previous open is never carried over.
+  function openCreateTask() {
+    setTaskForm({ ...EMPTY_TASK_FORM })
+    setTaskOpen(true)
+  }
+  function openCreateMs() {
+    setMsForm({ ...EMPTY_MS_FORM })
+    setMsOpen(true)
+  }
+  function openCreateDoc() {
+    setDocForm({ ...EMPTY_DOC_FORM })
+    setDocFile(null)
+    setDocFileError(null)
+    setDocOpen(true)
   }
 
   if (loading) {
@@ -921,7 +1010,6 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
 
   const docs = documents.data?.items ?? []
   const folders = documents.data?.folders ?? []
-  const folderOptions = [...new Set([...folders, 'General', 'Contracts', 'Design', 'Finance', 'Projects'])].sort()
 
   return (
     <div className="flex flex-col gap-6">
@@ -977,7 +1065,7 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
 
           {canManage && (
             <div className="flex shrink-0 items-center gap-2">
-              <Button variant="outline" className="h-11 gap-2" onClick={() => setTaskOpen(true)}>
+              <Button variant="outline" className="h-11 gap-2" onClick={openCreateTask}>
                 <Plus className="size-4" aria-hidden /> Add task
               </Button>
               <DropdownMenu>
@@ -1226,9 +1314,7 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
             <p className="text-sm text-muted-foreground">{p.milestones.length} milestone{p.milestones.length === 1 ? '' : 's'}</p>
             {canManage && (
               <Dialog open={msOpen} onOpenChange={setMsOpen}>
-                <DialogTrigger asChild>
-                  <Button className="h-11 gap-2"><Plus className="size-4" aria-hidden /> Add milestone</Button>
-                </DialogTrigger>
+                <Button className="h-11 gap-2" onClick={openCreateMs}><Plus className="size-4" aria-hidden /> Add milestone</Button>
                 <DialogContent className="sm:max-w-md">
                   <DialogHeader>
                     <DialogTitle>Add milestone</DialogTitle>
@@ -1364,7 +1450,7 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
                 {tasks.length} of {projectTasks.length} task{projectTasks.length === 1 ? '' : 's'}
               </span>
             </div>
-            <Button className="h-11 gap-2" onClick={() => setTaskOpen(true)}>
+            <Button className="h-11 gap-2" onClick={openCreateTask}>
               <Plus className="size-4" aria-hidden /> Add task
             </Button>
           </div>
@@ -1469,45 +1555,98 @@ function ProjectDetailPage({ projectId }: { projectId: string }) {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">{docs.length} file{docs.length === 1 ? '' : 's'} in this project{folders.length ? ` · folders: ${folders.join(', ')}` : ''}</p>
             <Dialog open={docOpen} onOpenChange={setDocOpen}>
-              <DialogTrigger asChild>
-                <Button className="h-11 gap-2"><Upload className="size-4" aria-hidden /> Add file</Button>
-              </DialogTrigger>
+              <Button className="h-11 gap-2" onClick={openCreateDoc}><Upload className="size-4" aria-hidden /> Add file</Button>
               <DialogContent className="sm:max-w-md">
                 <DialogHeader>
                   <DialogTitle>Add file</DialogTitle>
-                  <DialogDescription>Register a file in this project&apos;s folder (metadata only in this build).</DialogDescription>
+                  <DialogDescription>Upload a file into this project&apos;s folder — stored alongside the project.</DialogDescription>
                 </DialogHeader>
                 <div className="flex flex-col gap-4">
+                  {/* M12-fe: real <input type="file"> with the same MIME + size
+                      validation as documents-view. Name auto-fills from the file. */}
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="df-name">Name *</Label>
-                    <Input id="df-name" value={docForm.name} className="h-11" onChange={(e) => setDocForm((f) => ({ ...f, name: e.target.value }))} placeholder="Q3-report.pdf" autoFocus />
+                    <Label htmlFor="df-file">File *</Label>
+                    <Input
+                      id="df-file"
+                      type="file"
+                      accept={ACCEPT_MIME}
+                      onChange={(e) => {
+                        const picked = e.target.files?.[0] ?? null
+                        if (!picked) {
+                          setDocFile(null)
+                          setDocFileError(null)
+                          return
+                        }
+                        if (!isAllowedClientFile(picked)) {
+                          setDocFile(null)
+                          setDocFileError('Unsupported file type. Allowed: PDF, images, Office docs, text/CSV, ZIP or JSON.')
+                          e.target.value = ''
+                          return
+                        }
+                        if (picked.size > MAX_FILE_BYTES) {
+                          setDocFileError(`File is ${fmtSize(picked.size)} — exceeds the 25 MB limit.`)
+                        } else {
+                          setDocFileError(null)
+                        }
+                        setDocFile(picked)
+                        setDocForm((f) => ({ ...f, name: picked.name }))
+                      }}
+                      aria-label="Choose a file to upload"
+                      aria-invalid={!!docFileError || undefined}
+                      aria-describedby={docFileError ? 'df-file-error' : undefined}
+                    />
+                    {docFile && (
+                      <p className="text-xs text-muted-foreground">
+                        {docFile.name} · {fmtSize(docFile.size)}
+                        {docFile.size > MAX_FILE_BYTES && (
+                          <span className="font-medium text-destructive"> — exceeds the 25 MB limit</span>
+                        )}
+                      </p>
+                    )}
+                    {docFileError && (
+                      <p id="df-file-error" role="alert" className="text-xs font-medium text-destructive">
+                        {docFileError}
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      PDF, images, Office docs, text/CSV, ZIP or JSON — up to 25 MB.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="df-name">File name *</Label>
+                    <Input id="df-name" value={docForm.name} className="h-11" onChange={(e) => setDocForm((f) => ({ ...f, name: e.target.value }))} placeholder="Q3-report.pdf" />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="df-folder">Folder</Label>
-                    <Select value={docForm.folder} onValueChange={(v) => setDocForm((f) => ({ ...f, folder: v }))}>
+                    <Select value={docForm.folderChoice} onValueChange={(v) => setDocForm((f) => ({ ...f, folderChoice: v }))}>
                       <SelectTrigger id="df-folder" className="h-11"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        {folderOptions.map((fo) => (
+                        <SelectItem value={DOC_DEFAULT_FOLDER}>General (default)</SelectItem>
+                        {folders.map((fo) => (
                           <SelectItem key={fo} value={fo}>{fo}</SelectItem>
                         ))}
+                        <SelectItem value={DOC_NEW_FOLDER}>New folder…</SelectItem>
                       </SelectContent>
                     </Select>
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="df-mime">Type</Label>
-                      <Input id="df-mime" value={docForm.mimeType} className="h-11" onChange={(e) => setDocForm((f) => ({ ...f, mimeType: e.target.value }))} placeholder="application/pdf" />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor="df-size">Size (KB)</Label>
-                      <Input id="df-size" type="number" min="0" value={docForm.size} className="h-11" onChange={(e) => setDocForm((f) => ({ ...f, size: e.target.value }))} placeholder="240" />
-                    </div>
+                    {docForm.folderChoice === DOC_NEW_FOLDER && (
+                      <Input
+                        value={docForm.newFolder}
+                        className="h-11"
+                        onChange={(e) => setDocForm((f) => ({ ...f, newFolder: e.target.value }))}
+                        placeholder="New folder name"
+                        aria-label="New folder name"
+                      />
+                    )}
                   </div>
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" className="h-11" onClick={() => setDocOpen(false)}>Cancel</Button>
-                  <Button className="h-11" disabled={saving || !docForm.name.trim()} onClick={addDocument}>
-                    {saving ? 'Adding…' : 'Add file'}
+                  <Button
+                    className="h-11"
+                    disabled={saving || !docFile || !!docFileError || !docForm.name.trim() || (docFile?.size ?? 0) > MAX_FILE_BYTES || (docForm.folderChoice === DOC_NEW_FOLDER && !docForm.newFolder.trim())}
+                    onClick={addDocument}
+                  >
+                    {saving ? 'Uploading…' : 'Upload file'}
                   </Button>
                 </DialogFooter>
               </DialogContent>

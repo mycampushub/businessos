@@ -2,9 +2,10 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, oneOf, logActivity, audit } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
-import { round2, money, salariesInclude, salaryItem } from '../../payroll-helpers'
+import { money, salariesInclude, salaryItem } from '../../payroll-helpers'
+import { toCents } from '@/lib/server/money'
 
-// PATCH /api/finance/payroll/salaries/[membershipId] — baseSalary and/or full component set, finance-payroll FULL
+// PATCH /api/finance/payroll/salaries/[membershipId] - baseSalary and/or full component set, finance-payroll FULL
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ membershipId: string }> }) {
   const { membershipId } = await params
   return withAuth(async (_req, ctx) => {
@@ -20,19 +21,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ me
 
     const b = await body(req)
 
-    // baseSalary: undefined = untouched · null = cleared · number ≥ 0 = set
+    // C7 fix: baseSalary + components[].amount arrive as dollars (floats) from the
+    // client → convert to cents (Int) before writing to the DB.
     let baseSalary: number | null | undefined
     if (b.baseSalary !== undefined) {
       if (b.baseSalary === null) {
         baseSalary = null
       } else if (typeof b.baseSalary === 'number' && Number.isFinite(b.baseSalary) && b.baseSalary >= 0) {
-        baseSalary = round2(b.baseSalary)
+        baseSalary = toCents(b.baseSalary)
       } else {
         return fail('baseSalary must be a number of at least 0 (or null to clear)', 422)
       }
     }
 
-    // components: REPLACES the whole set when given
     let components: Array<{ label: string; kind: string; amount: number }> | undefined
     if (b.components !== undefined) {
       if (!Array.isArray(b.components)) return fail('components must be an array', 422)
@@ -45,7 +46,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ me
         if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
           return fail('components[].amount must be a number of at least 0', 422)
         }
-        components.push({ label, kind, amount: round2(amount) })
+        components.push({ label, kind, amount: toCents(amount)! })
       }
     }
 
@@ -74,6 +75,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ me
       entityId: target.id,
       oldValues: { baseSalary: target.baseSalary, componentsCount: target.salaryComponents.length },
       newValues: { baseSalary: updated?.baseSalary ?? null, componentsCount: updated?.salaryComponents.length ?? 0 },
+      impersonatedBy: ctx.session?.impersonatedBy?.id ?? null, // MA-1 #8 fix
     })
     await logActivity({
       orgId: org.id,
@@ -81,7 +83,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ me
       action: 'salary.updated',
       entityType: 'MEMBERSHIP',
       entityId: target.id,
-      message: `Salary for ${target.user.name} updated — base ${money(updated?.baseSalary ?? 0)}`,
+      message: 'Salary for ' + target.user.name + ' updated - base ' + money(updated?.baseSalary ?? 0),
     })
 
     return ok(updated ? salaryItem(updated) : null)

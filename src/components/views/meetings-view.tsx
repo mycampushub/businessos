@@ -60,6 +60,8 @@ interface MeetingItem {
   projectId: string | null
   projectName: string | null
   projectColor: string | null
+  // H9-fe: creator membership id (identity-by-id instead of by name).
+  createdByMembershipId: string | null
   createdByName: string | null
   participants: MeetingParticipant[]
   participantCount: number
@@ -422,7 +424,7 @@ function MeetingDetailDialog({
   onDeleted: (id: string) => void
   onEdit: (m: MeetingItem) => void
 }) {
-  const { can, role, navigate, me } = useWorkspace()
+  const { can, role, navigate, membership } = useWorkspace()
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -435,8 +437,10 @@ function MeetingDetailDialog({
   if (!meeting) return null
 
   const canManage = can('meetings')
-  // server rule: creator or OWNER/ADMIN/HR may delete
-  const isCreator = !!meeting.createdByName && meeting.createdByName === me?.user.name
+  // H9-fe: server rule is creator OR OWNER/ADMIN/HR — compare membership ids,
+  // not display names (two members can share a name; rename would silently
+  // strip the creator of their delete permission).
+  const isCreator = !!meeting.createdByMembershipId && meeting.createdByMembershipId === membership?.id
   const canDelete = canManage && (isCreator || ['OWNER', 'ADMIN', 'HR'].includes(role))
 
   async function saveNotes() {
@@ -546,10 +550,12 @@ function MeetingDetailDialog({
           <Button
             variant="outline"
             onClick={() => {
-              navigate('my-tasks')
-              toast({
-                title: 'Create the follow-up task from My Tasks',
-                description: `Suggested title: “Follow-up: ${meeting.title}”.`,
+              // H10-fe: pre-fill the My Tasks create dialog with a follow-up
+              // title + the meeting's project. MyTasksView reads these from
+              // nav.params on mount and opens its dialog with the form ready.
+              navigate('my-tasks', {
+                newTaskTitle: `Follow-up: ${meeting.title}`,
+                newTaskProjectId: meeting.projectId ?? undefined,
               })
             }}
           >

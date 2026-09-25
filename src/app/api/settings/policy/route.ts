@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, logActivity } from '@/lib/server/api'
 import { getOrgPolicy, isValidHHMM, parseWorkDays } from '@/lib/server/policy'
+import { toCents, fromCents0 } from '@/lib/server/money'
 
 function intInRange(v: unknown, min: number, max: number): number | null {
   const n = Number(v)
@@ -15,7 +16,8 @@ export const GET = withAuth(async (_req, ctx) => {
   const { org } = requireOrg(ctx)
   requireRole(ctx, ['ADMIN'])
   const policy = await getOrgPolicy(org.id)
-  return ok({ policy })
+  // C7: latePenaltyAmount is now Int cents in the DB — convert to dollars for the API response
+  return ok({ policy: { ...policy, latePenaltyAmount: fromCents0(policy.latePenaltyAmount) } })
 })
 
 /** PUT /api/settings/policy — {checkInTime?, checkOutTime?, lateGraceMins?, halfDayMins?, fullDayMins?, workDays?, overtimeEnabled?, payrollDay?, latePenaltyEnabled?, latePenaltyThreshold?, latePenaltyMode?, latePenaltyAmount?} (OWNER/ADMIN). */
@@ -82,12 +84,25 @@ export const PUT = withAuth(async (req, ctx) => {
     data.latePenaltyMode = b.latePenaltyMode
   }
   if (b.latePenaltyAmount !== undefined) {
+    // C7: client sends dollars, DB stores cents. Input is validated in dollars (0..1,000,000).
     const n = Number(b.latePenaltyAmount)
     if (Number.isNaN(n) || n < 0 || n > 1_000_000) return fail('latePenaltyAmount must be between 0 and 1000000', 422)
-    data.latePenaltyAmount = n
+    data.latePenaltyAmount = toCents(n) ?? 0
   }
 
-  await getOrgPolicy(org.id) // ensure the row exists (upserts defaults on first read)
+  // M22-db fix: validate the lateGraceMins < halfDayMins < fullDayMins chain across the final values.
+  // Fetch the current policy so we can merge pending changes with existing values for cross-field validation.
+  const existing = await getOrgPolicy(org.id)
+  const finalLateGrace = (data.lateGraceMins as number | undefined) ?? existing.lateGraceMins
+  const finalHalfDay = (data.halfDayMins as number | undefined) ?? existing.halfDayMins
+  const finalFullDay = (data.fullDayMins as number | undefined) ?? existing.fullDayMins
+  if (finalLateGrace >= finalHalfDay) {
+    return fail('lateGraceMins must be less than halfDayMins', 422)
+  }
+  if (finalHalfDay >= finalFullDay) {
+    return fail('halfDayMins must be less than fullDayMins', 422)
+  }
+
   const policy = await db.orgPolicy.update({ where: { orgId: org.id }, data })
 
   await logActivity({
@@ -99,5 +114,5 @@ export const PUT = withAuth(async (req, ctx) => {
     message: `${ctx.user.name} updated organization rules (policy)`,
   })
 
-  return ok({ policy })
+  return ok({ policy: { ...policy, latePenaltyAmount: fromCents0(policy.latePenaltyAmount) } })
 })

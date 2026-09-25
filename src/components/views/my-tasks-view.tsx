@@ -9,7 +9,7 @@
  * and dependencies.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, useData } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { toast } from '@/hooks/use-toast'
@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   ListChecks, CheckCircle2, CalendarDays, AlertTriangle, Plus, ClipboardList, Inbox, Flame,
@@ -61,25 +61,81 @@ function isDueThisWeek(t: TaskItem, doneKeys: Set<string>): boolean {
 }
 
 export default function MyTasksView() {
-  const { me, role } = useWorkspace()
-  // ALL tasks assigned to me (open + completed) — the board filters by dynamic done columns
-  const mine = useData<{ items: TaskItem[] }>('/api/tasks?assignee=me&limit=1000')
+  const { me, role, nav } = useWorkspace()
+  // H6-fe: paginated "Load more" pattern — replace the old `?limit=1000`
+  // single-shot fetch with offset-based pagination so a member with hundreds
+  // of assignments no longer pulls every record at once.
+  const PAGE_SIZE = 50
+  const [offset, setOffset] = useState(0)
+  const [allItems, setAllItems] = useState<TaskItem[]>([])
+  const [hasMore, setHasMore] = useState(true)
+  const mine = useData<{ items: TaskItem[] }>(
+    `/api/tasks?assignee=me&limit=${PAGE_SIZE}&offset=${offset}`
+  )
+
+  // Append (or replace on offset=0) whenever a fresh page arrives. Dedupe by
+  // id so a refresh can't sneak a duplicate in. Note: we only depend on
+  // `mine.data` (not `offset`) — depending on offset would cause the effect
+  // to fire with stale data when offset changes but the new fetch hasn't
+  // completed yet (e.g., on "Load more"). The closure captures the latest
+  // offset from the render that produced this effect run.
+  useEffect(() => {
+    if (!mine.data) return
+    setAllItems((prev) => {
+      if (offset === 0) return mine.data!.items
+      const seen = new Set(prev.map((t) => t.id))
+      return [...prev, ...mine.data!.items.filter((t) => !seen.has(t.id))]
+    })
+    setHasMore(mine.data.items.length >= PAGE_SIZE)
+  }, [mine.data])
+
+  // Any refresh (board CRUD, task move, create) resets to page 1 so the
+  // entire accumulated list is re-fetched from scratch.
+  function refreshAll() {
+    if (offset === 0) {
+      mine.refresh()
+    } else {
+      setOffset(0)
+    }
+  }
+
+  function loadMore() {
+    setOffset((o) => o + PAGE_SIZE)
+  }
+
   const columns = useData<{ items: ColumnItem[] }>('/api/columns?surface=TASK')
   const employees = useData<{ items: EmployeeItem[] }>('/api/hr/employees')
   const projects = useData<{ items: ProjectOption[] }>('/api/projects')
 
+  const EMPTY_FORM = {
+    title: '', projectId: 'none', dueDate: '', startDate: '', priority: 'MEDIUM',
+    description: '', est: '', deps: [] as string[],
+  }
   const [createOpen, setCreateOpen] = useState(false)
   const [addColumnOpen, setAddColumnOpen] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [form, setForm] = useState({
-    title: '', projectId: 'none', dueDate: '', startDate: '', priority: 'MEDIUM',
-    description: '', est: '', deps: [] as string[],
-  })
+  const [form, setForm] = useState(EMPTY_FORM)
 
   const [detailOpen, setDetailOpen] = useState(false)
   const [dialogTask, setDialogTask] = useState<TaskItem | null>(null)
 
-  const allItems = mine.data?.items ?? []
+  // H10-fe: support deep-linking from Meetings → "Create follow-up task"
+  // (or any other caller) that pre-fills the create dialog via nav.params.
+  useEffect(() => {
+    const params = nav.params
+    if (!params) return
+    const title = params.newTaskTitle
+    const projectId = params.newTaskProjectId
+    if (!title && !projectId) return
+    setForm({
+      title: title ?? '',
+      projectId: projectId && projectId !== 'none' ? projectId : 'none',
+      dueDate: '', startDate: '', priority: 'MEDIUM',
+      description: '', est: '', deps: [],
+    })
+    setCreateOpen(true)
+  }, [nav.params])
+
   const colItems = columns.data?.items ?? []
   // graceful fallback when the column list is unavailable: derive boards from the data itself
   const effectiveColumns: TaskColumnOption[] = useMemo(() => {
@@ -114,7 +170,7 @@ export default function MyTasksView() {
 
   async function refreshBoard() {
     columns.refresh()
-    mine.refresh()
+    refreshAll()
   }
 
   function crudColumns(): CrudColumn[] {
@@ -178,20 +234,18 @@ export default function MyTasksView() {
   }
 
   function applyUpdate(updated: TaskItem) {
-    mine.setData((prev) => prev
-      ? { items: prev.items.map((t) => {
-          if (t.id === updated.id) return updated
-          if ((t.subtasks ?? []).some((s) => s.id === updated.id)) {
-            return { ...t, subtasks: (t.subtasks ?? []).map((s) => (s.id === updated.id ? { ...s, status: updated.status } : s)) }
-          }
-          return t
-        }) }
-      : prev)
+    setAllItems((prev) => prev.map((t) => {
+      if (t.id === updated.id) return updated
+      if ((t.subtasks ?? []).some((s) => s.id === updated.id)) {
+        return { ...t, subtasks: (t.subtasks ?? []).map((s) => (s.id === updated.id ? { ...s, status: updated.status } : s)) }
+      }
+      return t
+    }))
     setDialogTask((prev) => (prev && prev.id === updated.id ? updated : prev))
   }
 
   function handleDeleted(id: string) {
-    mine.setData((prev) => (prev ? { items: prev.items.filter((t) => t.id !== id) } : prev))
+    setAllItems((prev) => prev.filter((t) => t.id !== id))
     setDialogTask((prev) => (prev && prev.id === id ? null : prev))
   }
 
@@ -201,7 +255,7 @@ export default function MyTasksView() {
       applyUpdate(updated)
       toast({ title: 'Task moved', description: `"${task.title}" → ${effectiveColumns.find((c) => c.key === status)?.label ?? status}` })
     } catch {
-      mine.refresh() // revert layout on failure
+      refreshAll() // revert layout on failure
     }
   }
 
@@ -224,14 +278,43 @@ export default function MyTasksView() {
       })
       toast({ title: 'Task created', description: `"${created.title}" added to your board` })
       setCreateOpen(false)
-      setForm({ title: '', projectId: 'none', dueDate: '', startDate: '', priority: 'MEDIUM', description: '', est: '', deps: [] })
-      mine.refresh()
+      setForm({ ...EMPTY_FORM })
+      refreshAll()
     } catch { /* api() toasts */ } finally {
       setCreating(false)
     }
   }
 
   const crudCols = crudColumns()
+
+  // H4-fe: surface API errors explicitly instead of falling through to
+  // the "No tasks assigned to you" empty state (which is misleading when
+  // the request actually failed). With pagination we only short-circuit
+  // when the FIRST page failed — a failed "Load more" leaves the already
+  // loaded items visible (the api() toast surfaces the error).
+  if (mine.error && allItems.length === 0) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title="My Tasks"
+          description="Everything assigned to you across all projects"
+          icon={ClipboardList}
+        />
+        <EmptyState
+          icon={AlertTriangle}
+          title="Couldn't load your tasks"
+          description={mine.error}
+        />
+      </div>
+    )
+  }
+
+  // H20: openCreate resets the form before opening the dialog so stale input
+  // from a previous open is never carried over to a fresh create session.
+  function openCreate() {
+    setForm({ ...EMPTY_FORM })
+    setCreateOpen(true)
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -241,11 +324,9 @@ export default function MyTasksView() {
         icon={ClipboardList}
         actions={
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button className="h-11 gap-2">
-                <Plus className="size-4" aria-hidden /> New task
-              </Button>
-            </DialogTrigger>
+            <Button className="h-11 gap-2" onClick={openCreate}>
+              <Plus className="size-4" aria-hidden /> New task
+            </Button>
             <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>New task</DialogTitle>
@@ -368,7 +449,7 @@ export default function MyTasksView() {
             title="No tasks assigned to you"
             description="Enjoy the calm — or create a personal task to get moving."
             action={
-              <Button className="h-11 gap-2" onClick={() => setCreateOpen(true)}>
+              <Button className="h-11 gap-2" onClick={openCreate}>
                 <Plus className="size-4" aria-hidden /> New task
               </Button>
             }
@@ -485,6 +566,18 @@ export default function MyTasksView() {
           </CardContent>
         </Card>
       </div>
+
+      {/* H6-fe: Load more — only shown when the last page was a full page */}
+      {allItems.length > 0 && (hasMore || mine.loading) && (
+        <div className="flex flex-col items-center gap-1.5">
+          <Button variant="outline" className="h-11" onClick={loadMore} disabled={mine.loading}>
+            {mine.loading ? 'Loading…' : 'Load more'}
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Showing {allItems.length} task{allItems.length === 1 ? '' : 's'} assigned to you.
+          </p>
+        </div>
+      )}
 
       <TaskDetailDialog
         task={dialogTask}

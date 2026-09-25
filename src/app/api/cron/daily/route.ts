@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server'
 import { timingSafeEqual } from 'crypto'
 import { db } from '@/lib/db'
 import { ok, fail, notifyUsers, logActivity, managerUserIds, invalidateSubscriptionCache } from '@/lib/server/api'
+import { getTaskColumns, doneKeys } from '@/lib/server/columns'
+import { fromCents0 } from '@/lib/server/money'
 
 /**
  * POST /api/cron/daily — platform maintenance sweep (Cloudflare Cron Trigger).
@@ -70,8 +72,9 @@ export async function POST(req: NextRequest) {
       title: list.length === 1 ? `Invoice ${list[0].number} is overdue` : `${list.length} invoices are overdue`,
       body:
         list.length === 1
-          ? `Invoice ${list[0].number} (${list[0].client.name}, ${list[0].total.toFixed(2)}) passed its due date.`
-          : `Invoices past due: ${list.map((i) => i.number).join(', ')}. Total outstanding: ${total.toFixed(2)}.`,
+          // MA-1 #10 fix: convert cents → taka for display (was showing 100x too big)
+          ? `Invoice ${list[0].number} (${list[0].client.name}, ৳${Math.round(fromCents0(list[0].total)).toLocaleString('en-US')}) passed its due date.`
+          : `Invoices past due: ${list.map((i) => i.number).join(', ')}. Total outstanding: ৳${Math.round(fromCents0(total)).toLocaleString('en-US')}.`,
     })
     await logActivity({
       orgId,
@@ -171,29 +174,44 @@ export async function POST(req: NextRequest) {
   }
 
   // ---------- 4. open tasks due within 24h → remind assignees ----------
-  // (assigneeMembershipId is a plain column — no relation; resolve manually)
-  const dueTasks = await db.task.findMany({
-    where: { status: { in: ['TODO', 'IN_PROGRESS', 'REVIEW'] }, dueDate: { gte: now, lte: in24h }, assigneeMembershipId: { not: null } },
-    select: { title: true, dueDate: true, orgId: true, assigneeMembershipId: true },
+  // C6/H4 fix: use each org's dynamic BoardColumn "done" keys instead of hardcoded
+  // ['TODO','IN_PROGRESS','REVIEW']. Orgs that customize their TASK board now get
+  // correct due-soon reminders.
+  const dueTaskCandidates = await db.task.findMany({
+    where: { dueDate: { gte: now, lte: in24h }, assigneeMembershipId: { not: null } },
+    select: { title: true, dueDate: true, orgId: true, assigneeMembershipId: true, status: true },
   })
-  const assigneeIds = [...new Set(dueTasks.map((t) => t.assigneeMembershipId as string))]
+  // Group by org so we can resolve each org's done-keys once
+  const tasksByOrg = new Map<string, typeof dueTaskCandidates>()
+  for (const t of dueTaskCandidates) {
+    const list = tasksByOrg.get(t.orgId) ?? []
+    list.push(t)
+    tasksByOrg.set(t.orgId, list)
+  }
+  const assigneeIds = [...new Set(dueTaskCandidates.map((t) => t.assigneeMembershipId as string))]
   const assigneeMemberships = assigneeIds.length
     ? await db.membership.findMany({ where: { id: { in: assigneeIds } }, select: { id: true, userId: true } })
     : []
   const assigneeUserByMembership = new Map(assigneeMemberships.map((m) => [m.id, m.userId]))
   let taskReminders = 0
-  for (const task of dueTasks) {
-    const userId = task.assigneeMembershipId ? assigneeUserByMembership.get(task.assigneeMembershipId) : undefined
-    if (!userId) continue
-    taskReminders += 1
-    await notifyUsers({
-      orgId: task.orgId,
-      userIds: [userId],
-      type: 'TASK',
-      module: 'TASKS',
-      title: 'Task due soon',
-      body: `"${task.title}" is due ${task.dueDate ? task.dueDate.toISOString().slice(0, 10) : 'today'}.`,
-    })
+  for (const [orgId, tasks] of tasksByOrg) {
+    const cols = await getTaskColumns(orgId)
+    const doneSet = new Set(doneKeys(cols))
+    // Only remind for tasks whose status is NOT a done status
+    const openTasks = tasks.filter((t) => !doneSet.has(t.status))
+    for (const task of openTasks) {
+      const userId = task.assigneeMembershipId ? assigneeUserByMembership.get(task.assigneeMembershipId) : undefined
+      if (!userId) continue
+      taskReminders += 1
+      await notifyUsers({
+        orgId: task.orgId,
+        userIds: [userId],
+        type: 'TASK',
+        module: 'my-tasks', // L27-be fix: use lowercase module key (was 'TASKS') for frontend navigate()
+        title: 'Task due soon',
+        body: `"${task.title}" is due ${task.dueDate ? task.dueDate.toISOString().slice(0, 10) : 'today'}.`,
+      })
+    }
   }
 
   // ---------- 5. purge expired sessions ----------

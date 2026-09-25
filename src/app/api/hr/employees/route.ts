@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, withAuth, requireOrg } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { canSeeEmployeePii, maskEmail, maskPhone } from './employee-helpers'
+import { fromCents } from '@/lib/server/money'
 
 // GET /api/hr/employees — employee directory of the active org
 // Contact PII (email/phone) is masked for roles outside PII_ROLES.
@@ -51,6 +52,9 @@ export async function GET(req: NextRequest) {
         departmentName: m.department?.name ?? null,
         managerId: m.managerId,
         managerName: m.managerId ? (managerNames.get(m.managerId) ?? null) : null,
+        // C7: baseSalary is now Int cents in the DB — convert to dollars for the API response.
+        // Only PII-roles see salary (defense in depth — PATCH is OWNER/ADMIN/HR only).
+        baseSalary: canSeePii ? fromCents(m.baseSalary) : null,
       }
     })
 

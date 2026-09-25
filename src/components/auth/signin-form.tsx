@@ -18,6 +18,10 @@ import { FormError } from './form-error'
 
 /** Session probe — /api/auth/me returns 200 + null for anonymous visitors. */
 
+// M4-ui: client-side email format check (browsers' `type=email` validation is
+// disabled by `noValidate`, so a regex gate is needed before hitting the API).
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
 export function SignInForm() {
   const router = useRouter()
   const [email, setEmail] = useState('')
@@ -44,6 +48,11 @@ export function SignInForm() {
   async function submit(e?: React.FormEvent) {
     e?.preventDefault()
     setError(null)
+    // M4-ui: validate email format client-side before kicking off the request.
+    if (!EMAIL_RE.test(email.trim())) {
+      setError('Please enter a valid email address.')
+      return
+    }
     setBusy(true)
     setPendingDemo(null)
     try {
@@ -86,6 +95,9 @@ export function SignInForm() {
     setPendingDemo(demoEmail)
     setBusy(true)
     try {
+      // L25-fe: `password123` is the documented sandbox-only demo password (see
+      // demo-accounts.tsx). This code path is only reachable in the demo/preview
+      // environment — production builds do not render the DemoAccounts widget.
       const res = await api<{ mfaRequired?: boolean }>('/api/auth/login', {
         method: 'POST',
         body: { email: demoEmail, password: 'password123' },
@@ -166,7 +178,7 @@ export function SignInForm() {
           </p>
 
           <form onSubmit={submit} className="mt-6 flex flex-col gap-4" noValidate>
-            <FormError message={error} />
+            <FormError message={error} id="signin-error" />
             <div className="flex flex-col gap-2">
               <Label htmlFor="email">Email</Label>
               <div className="relative">
@@ -182,6 +194,7 @@ export function SignInForm() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   aria-invalid={!!error || undefined}
+                  aria-describedby="signin-error"
                   disabled={busy}
                   required
                   className="h-11 pl-9"
@@ -194,7 +207,16 @@ export function SignInForm() {
               autoComplete="current-password"
               invalid={!!error}
               disabled={busy}
+              describedBy="signin-error"
             />
+            <div className="-mt-2 flex justify-end">
+              <Link
+                href="/forgot-password"
+                className="text-xs font-medium text-emerald-700 underline-offset-4 hover:underline dark:text-emerald-400"
+              >
+                Forgot your password?
+              </Link>
+            </div>
             <Button type="submit" className="h-11 w-full" disabled={busy || !email || !password}>
               {busy && !pendingDemo ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <LogIn className="size-4" aria-hidden />}
               Sign in

@@ -1,18 +1,3 @@
--- OrgOS D1 migration 0001 — full schema (single consolidated migration)
--- ---------------------------------------------------------------
--- Generated with `prisma migrate diff --from-empty --to-schema-datamodel
--- prisma/schema.prisma --script` from the CURRENT Prisma schema, so D1 always
--- mirrors the sandbox SQLite database exactly (45 tables, including the SaaS
--- platform billing layer: Plan + Subscription).
---
--- D1 note: foreign keys are enforced; the table order below already satisfies
--- dependency order, and SQLite only validates FKs on write — no rebuilds or
--- PRAGMA workarounds are needed for this initial migration.
---
--- Apply with:
---   npx wrangler d1 migrations apply orgos --remote
---   (migrations_dir is configured in the root wrangler.toml)
-
 -- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL PRIMARY KEY,
@@ -26,6 +11,11 @@ CREATE TABLE "User" (
     "phone" TEXT,
     "skills" TEXT,
     "emailVerified" DATETIME,
+    "emailVerifyToken" TEXT,
+    "passwordResetToken" TEXT,
+    "passwordResetExpires" DATETIME,
+    "mfaSecret" TEXT,
+    "mfaEnabled" BOOLEAN NOT NULL DEFAULT false,
     "platformAdmin" BOOLEAN NOT NULL DEFAULT false,
     "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -39,7 +29,9 @@ CREATE TABLE "Session" (
     "expiresAt" DATETIME NOT NULL,
     "impersonatedBy" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "Session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "Session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "Session_impersonatedBy_fkey" FOREIGN KEY ("impersonatedBy") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -55,11 +47,13 @@ CREATE TABLE "Organization" (
     "country" TEXT,
     "timezone" TEXT NOT NULL DEFAULT 'Asia/Dhaka',
     "currency" TEXT NOT NULL DEFAULT 'BDT',
-    "plan" TEXT NOT NULL DEFAULT 'Growth',
+    "plan" TEXT NOT NULL DEFAULT 'GROWTH',
     "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "foundedYear" INTEGER,
     "ownerId" TEXT NOT NULL,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "Organization_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -68,8 +62,8 @@ CREATE TABLE "Plan" (
     "code" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "description" TEXT,
-    "priceMonthly" REAL NOT NULL DEFAULT 0,
-    "priceYearly" REAL NOT NULL DEFAULT 0,
+    "priceMonthly" INTEGER NOT NULL DEFAULT 0,
+    "priceYearly" INTEGER NOT NULL DEFAULT 0,
     "currency" TEXT NOT NULL DEFAULT 'BDT',
     "seatLimit" INTEGER NOT NULL DEFAULT 5,
     "projectLimit" INTEGER NOT NULL DEFAULT 3,
@@ -77,7 +71,27 @@ CREATE TABLE "Plan" (
     "features" TEXT,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "sortOrder" INTEGER NOT NULL DEFAULT 0,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "BillingRequest" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "orgId" TEXT NOT NULL,
+    "planId" TEXT NOT NULL,
+    "billingCycle" TEXT NOT NULL DEFAULT 'MONTHLY',
+    "seats" INTEGER NOT NULL DEFAULT 5,
+    "amount" INTEGER NOT NULL DEFAULT 0,
+    "note" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "requestedById" TEXT,
+    "decidedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "BillingRequest_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "BillingRequest_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT "BillingRequest_requestedById_fkey" FOREIGN KEY ("requestedById") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -88,12 +102,13 @@ CREATE TABLE "Subscription" (
     "billingCycle" TEXT NOT NULL DEFAULT 'MONTHLY',
     "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "seats" INTEGER NOT NULL DEFAULT 5,
-    "amountMonthly" REAL NOT NULL DEFAULT 0,
+    "amountMonthly" INTEGER NOT NULL DEFAULT 0,
     "startedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "currentPeriodStart" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "currentPeriodEnd" DATETIME NOT NULL,
     "cancelledAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Subscription_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Subscription_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
@@ -114,10 +129,14 @@ CREATE TABLE "Membership" (
     "phone" TEXT,
     "emergencyContact" TEXT,
     "workSchedule" TEXT,
-    "baseSalary" REAL,
+    "baseSalary" INTEGER,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "Membership_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Membership_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "Membership_departmentId_fkey" FOREIGN KEY ("departmentId") REFERENCES "Department" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+    CONSTRAINT "Membership_departmentId_fkey" FOREIGN KEY ("departmentId") REFERENCES "Department" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Membership_managerId_fkey" FOREIGN KEY ("managerId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -129,7 +148,9 @@ CREATE TABLE "Department" (
     "color" TEXT,
     "parentId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "Department_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "Department_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "Department_parentId_fkey" FOREIGN KEY ("parentId") REFERENCES "Department" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -140,6 +161,7 @@ CREATE TABLE "Team" (
     "name" TEXT NOT NULL,
     "description" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Team_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Team_departmentId_fkey" FOREIGN KEY ("departmentId") REFERENCES "Department" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -150,6 +172,8 @@ CREATE TABLE "TeamMember" (
     "teamId" TEXT NOT NULL,
     "membershipId" TEXT NOT NULL,
     "role" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "TeamMember_teamId_fkey" FOREIGN KEY ("teamId") REFERENCES "Team" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "TeamMember_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -165,14 +189,16 @@ CREATE TABLE "Project" (
     "managerMembershipId" TEXT,
     "status" TEXT NOT NULL DEFAULT 'PLANNING',
     "priority" TEXT NOT NULL DEFAULT 'MEDIUM',
-    "budget" REAL,
+    "budget" INTEGER,
     "startDate" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "endDate" DATETIME,
     "progress" INTEGER NOT NULL DEFAULT 0,
     "color" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Project_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "Project_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+    CONSTRAINT "Project_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Project_managerMembershipId_fkey" FOREIGN KEY ("managerMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -181,6 +207,8 @@ CREATE TABLE "ProjectMember" (
     "projectId" TEXT NOT NULL,
     "membershipId" TEXT NOT NULL,
     "role" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "ProjectMember_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "ProjectMember_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -195,6 +223,7 @@ CREATE TABLE "Milestone" (
     "status" TEXT NOT NULL DEFAULT 'PENDING',
     "completedAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Milestone_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -220,9 +249,13 @@ CREATE TABLE "Task" (
     "parentTaskId" TEXT,
     "completedAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "Task_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Task_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Task_milestoneId_fkey" FOREIGN KEY ("milestoneId") REFERENCES "Milestone" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Task_assigneeMembershipId_fkey" FOREIGN KEY ("assigneeMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Task_creatorMembershipId_fkey" FOREIGN KEY ("creatorMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Task_parentTaskId_fkey" FOREIGN KEY ("parentTaskId") REFERENCES "Task" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -232,6 +265,8 @@ CREATE TABLE "TaskDependency" (
     "taskId" TEXT NOT NULL,
     "dependsOnTaskId" TEXT NOT NULL,
     "type" TEXT NOT NULL DEFAULT 'FS',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "TaskDependency_taskId_fkey" FOREIGN KEY ("taskId") REFERENCES "Task" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "TaskDependency_dependsOnTaskId_fkey" FOREIGN KEY ("dependsOnTaskId") REFERENCES "Task" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -245,6 +280,7 @@ CREATE TABLE "TimeEntry" (
     "note" TEXT,
     "billable" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "TimeEntry_taskId_fkey" FOREIGN KEY ("taskId") REFERENCES "Task" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -258,6 +294,7 @@ CREATE TABLE "Comment" (
     "body" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "taskId" TEXT,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Comment_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Comment_authorMembershipId_fkey" FOREIGN KEY ("authorMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Comment_taskId_fkey" FOREIGN KEY ("taskId") REFERENCES "Task" ("id") ON DELETE SET NULL ON UPDATE CASCADE
@@ -276,9 +313,21 @@ CREATE TABLE "Meeting" (
     "createdByMembershipId" TEXT,
     "participants" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Meeting_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Meeting_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Meeting_createdByMembershipId_fkey" FOREIGN KEY ("createdByMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "MeetingParticipant" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "meetingId" TEXT NOT NULL,
+    "membershipId" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "MeetingParticipant_meetingId_fkey" FOREIGN KEY ("meetingId") REFERENCES "Meeting" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "MeetingParticipant_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -291,6 +340,7 @@ CREATE TABLE "Company" (
     "address" TEXT,
     "notes" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Company_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -305,6 +355,7 @@ CREATE TABLE "Contact" (
     "phone" TEXT,
     "notes" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Contact_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Contact_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -320,6 +371,8 @@ CREATE TABLE "Client" (
     "status" TEXT NOT NULL DEFAULT 'ACTIVE',
     "healthNote" TEXT,
     "since" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Client_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Client_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -334,13 +387,16 @@ CREATE TABLE "Lead" (
     "phone" TEXT,
     "source" TEXT NOT NULL DEFAULT 'MANUAL',
     "status" TEXT NOT NULL DEFAULT 'NEW',
-    "value" REAL,
+    "value" INTEGER,
     "industry" TEXT,
     "notes" TEXT,
     "ownerMembershipId" TEXT,
     "convertedCompanyId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "Lead_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "Lead_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "Lead_ownerMembershipId_fkey" FOREIGN KEY ("ownerMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Lead_convertedCompanyId_fkey" FOREIGN KEY ("convertedCompanyId") REFERENCES "Company" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -351,6 +407,8 @@ CREATE TABLE "PipelineStage" (
     "order" INTEGER NOT NULL DEFAULT 0,
     "isTerminalWon" BOOLEAN NOT NULL DEFAULT false,
     "isTerminalLost" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "PipelineStage_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -359,7 +417,7 @@ CREATE TABLE "Deal" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "orgId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
-    "value" REAL NOT NULL DEFAULT 0,
+    "value" INTEGER NOT NULL DEFAULT 0,
     "companyId" TEXT,
     "contactId" TEXT,
     "stageId" TEXT NOT NULL,
@@ -372,10 +430,14 @@ CREATE TABLE "Deal" (
     "notes" TEXT,
     "wonAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Deal_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Deal_companyId_fkey" FOREIGN KEY ("companyId") REFERENCES "Company" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Deal_contactId_fkey" FOREIGN KEY ("contactId") REFERENCES "Contact" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT "Deal_stageId_fkey" FOREIGN KEY ("stageId") REFERENCES "PipelineStage" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT "Deal_stageId_fkey" FOREIGN KEY ("stageId") REFERENCES "PipelineStage" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT "Deal_ownerMembershipId_fkey" FOREIGN KEY ("ownerMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Deal_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Deal_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -391,6 +453,7 @@ CREATE TABLE "CrmActivity" (
     "done" BOOLEAN NOT NULL DEFAULT false,
     "createdById" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "CrmActivity_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "CrmActivity_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -409,8 +472,8 @@ CREATE TABLE "Job" (
     "employmentType" TEXT NOT NULL DEFAULT 'FULL_TIME',
     "location" TEXT,
     "workMode" TEXT NOT NULL DEFAULT 'ONSITE',
-    "salaryMin" REAL,
-    "salaryMax" REAL,
+    "salaryMin" INTEGER,
+    "salaryMax" INTEGER,
     "currency" TEXT NOT NULL DEFAULT 'BDT',
     "deadline" DATETIME,
     "openings" INTEGER NOT NULL DEFAULT 1,
@@ -418,8 +481,10 @@ CREATE TABLE "Job" (
     "status" TEXT NOT NULL DEFAULT 'OPEN',
     "hiringManagerMembershipId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Job_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "Job_departmentId_fkey" FOREIGN KEY ("departmentId") REFERENCES "Department" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+    CONSTRAINT "Job_departmentId_fkey" FOREIGN KEY ("departmentId") REFERENCES "Department" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Job_hiringManagerMembershipId_fkey" FOREIGN KEY ("hiringManagerMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -441,6 +506,7 @@ CREATE TABLE "Application" (
     "processedByMembershipId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "decidedAt" DATETIME,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Application_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "Job" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Application_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Application_processedByMembershipId_fkey" FOREIGN KEY ("processedByMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
@@ -458,6 +524,7 @@ CREATE TABLE "Attendance" (
     "workedMinutes" INTEGER,
     "note" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Attendance_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Attendance_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -470,6 +537,8 @@ CREATE TABLE "LeaveType" (
     "daysPerYear" INTEGER NOT NULL DEFAULT 10,
     "color" TEXT,
     "paid" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "LeaveType_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -487,6 +556,7 @@ CREATE TABLE "LeaveRequest" (
     "approverMembershipId" TEXT,
     "decidedAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "LeaveRequest_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "LeaveRequest_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "LeaveRequest_leaveTypeId_fkey" FOREIGN KEY ("leaveTypeId") REFERENCES "LeaveType" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
@@ -502,17 +572,19 @@ CREATE TABLE "Invoice" (
     "dueDate" DATETIME NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'DRAFT',
     "items" TEXT NOT NULL,
-    "subtotal" REAL NOT NULL DEFAULT 0,
+    "subtotal" INTEGER NOT NULL DEFAULT 0,
     "taxRate" REAL NOT NULL DEFAULT 0,
-    "taxAmount" REAL NOT NULL DEFAULT 0,
-    "discount" REAL NOT NULL DEFAULT 0,
-    "total" REAL NOT NULL DEFAULT 0,
+    "taxAmount" INTEGER NOT NULL DEFAULT 0,
+    "discount" INTEGER NOT NULL DEFAULT 0,
+    "total" INTEGER NOT NULL DEFAULT 0,
     "notes" TEXT,
     "projectId" TEXT,
     "paidAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "Invoice_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "Invoice_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "Invoice_clientId_fkey" FOREIGN KEY ("clientId") REFERENCES "Client" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -523,15 +595,18 @@ CREATE TABLE "Expense" (
     "projectId" TEXT,
     "title" TEXT NOT NULL,
     "category" TEXT NOT NULL DEFAULT 'GENERAL',
-    "amount" REAL NOT NULL,
+    "amount" INTEGER NOT NULL,
     "date" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "status" TEXT NOT NULL DEFAULT 'SUBMITTED',
     "receiptUrl" TEXT,
     "notes" TEXT,
     "approvedById" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "Expense_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "Expense_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "Expense_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "Expense_approvedById_fkey" FOREIGN KEY ("approvedById") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -541,6 +616,8 @@ CREATE TABLE "ModuleAccess" (
     "module" TEXT NOT NULL,
     "role" TEXT NOT NULL,
     "level" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "ModuleAccess_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -559,7 +636,9 @@ CREATE TABLE "OrgPolicy" (
     "latePenaltyEnabled" BOOLEAN NOT NULL DEFAULT false,
     "latePenaltyThreshold" INTEGER NOT NULL DEFAULT 3,
     "latePenaltyMode" TEXT NOT NULL DEFAULT 'HALF_DAY',
-    "latePenaltyAmount" REAL NOT NULL DEFAULT 500,
+    "latePenaltyAmount" INTEGER NOT NULL DEFAULT 50000,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "OrgPolicy_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -573,6 +652,7 @@ CREATE TABLE "Holiday" (
     "endDate" DATETIME NOT NULL,
     "description" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Holiday_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -587,9 +667,10 @@ CREATE TABLE "AttendanceSession" (
     "minutes" INTEGER,
     "note" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "AttendanceSession_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "AttendanceSession_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "AttendanceSession_attendanceId_fkey" FOREIGN KEY ("attendanceId") REFERENCES "Attendance" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT "AttendanceSession_attendanceId_fkey" FOREIGN KEY ("attendanceId") REFERENCES "Attendance" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
 -- CreateTable
@@ -599,6 +680,8 @@ CREATE TABLE "SessionTaskEntry" (
     "taskId" TEXT,
     "minutes" INTEGER NOT NULL,
     "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "SessionTaskEntry_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "AttendanceSession" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "SessionTaskEntry_taskId_fkey" FOREIGN KEY ("taskId") REFERENCES "Task" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -615,6 +698,7 @@ CREATE TABLE "BoardColumn" (
     "isRejected" BOOLEAN NOT NULL DEFAULT false,
     "color" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "BoardColumn_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
@@ -630,6 +714,8 @@ CREATE TABLE "PayrollRun" (
     "approvedAt" DATETIME,
     "paidAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "PayrollRun_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "PayrollRun_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "PayrollRun_approvedById_fkey" FOREIGN KEY ("approvedById") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
@@ -640,18 +726,20 @@ CREATE TABLE "Payslip" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "runId" TEXT NOT NULL,
     "membershipId" TEXT NOT NULL,
-    "baseSalary" REAL NOT NULL DEFAULT 0,
-    "allowances" REAL NOT NULL DEFAULT 0,
-    "deductions" REAL NOT NULL DEFAULT 0,
+    "baseSalary" INTEGER NOT NULL DEFAULT 0,
+    "allowances" INTEGER NOT NULL DEFAULT 0,
+    "deductions" INTEGER NOT NULL DEFAULT 0,
     "unpaidLeaveDays" INTEGER NOT NULL DEFAULT 0,
-    "unpaidLeaveAmount" REAL NOT NULL DEFAULT 0,
-    "gross" REAL NOT NULL DEFAULT 0,
-    "net" REAL NOT NULL DEFAULT 0,
+    "unpaidLeaveAmount" INTEGER NOT NULL DEFAULT 0,
+    "gross" INTEGER NOT NULL DEFAULT 0,
+    "net" INTEGER NOT NULL DEFAULT 0,
     "presentDays" INTEGER,
     "absentDays" INTEGER,
     "lateDays" INTEGER,
     "breakdown" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "Payslip_runId_fkey" FOREIGN KEY ("runId") REFERENCES "PayrollRun" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Payslip_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -663,8 +751,9 @@ CREATE TABLE "SalaryComponent" (
     "membershipId" TEXT NOT NULL,
     "label" TEXT NOT NULL,
     "kind" TEXT NOT NULL DEFAULT 'ALLOWANCE',
-    "amount" REAL NOT NULL DEFAULT 0,
+    "amount" INTEGER NOT NULL DEFAULT 0,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "SalaryComponent_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "SalaryComponent_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -678,6 +767,7 @@ CREATE TABLE "Announcement" (
     "body" TEXT NOT NULL,
     "pinned" BOOLEAN NOT NULL DEFAULT false,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Announcement_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Announcement_authorMembershipId_fkey" FOREIGN KEY ("authorMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -693,6 +783,7 @@ CREATE TABLE "Notification" (
     "module" TEXT,
     "readAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Notification_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Notification_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
@@ -710,6 +801,8 @@ CREATE TABLE "Document" (
     "version" INTEGER NOT NULL DEFAULT 1,
     "uploadedById" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "deletedAt" DATETIME,
     CONSTRAINT "Document_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Document_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "Document_uploadedById_fkey" FOREIGN KEY ("uploadedById") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
@@ -725,6 +818,7 @@ CREATE TABLE "ActivityLog" (
     "entityId" TEXT,
     "message" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "ActivityLog_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "ActivityLog_actorMembershipId_fkey" FOREIGN KEY ("actorMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
@@ -732,20 +826,39 @@ CREATE TABLE "ActivityLog" (
 -- CreateTable
 CREATE TABLE "AuditLog" (
     "id" TEXT NOT NULL PRIMARY KEY,
-    "orgId" TEXT NOT NULL,
+    "orgId" TEXT,
     "actorMembershipId" TEXT,
     "action" TEXT NOT NULL,
     "entity" TEXT NOT NULL,
     "entityId" TEXT,
     "oldValues" TEXT,
     "newValues" TEXT,
+    "impersonatedBy" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "AuditLog_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "Organization" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "AuditLog_actorMembershipId_fkey" FOREIGN KEY ("actorMembershipId") REFERENCES "Membership" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
 
+-- CreateTable
+CREATE TABLE "ContactMessage" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "type" TEXT NOT NULL DEFAULT 'CONTACT',
+    "name" TEXT,
+    "email" TEXT NOT NULL,
+    "company" TEXT,
+    "topic" TEXT,
+    "message" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'NEW',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateIndex
+CREATE INDEX "Session_expiresAt_idx" ON "Session"("expiresAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Organization_slug_key" ON "Organization"("slug");
@@ -754,10 +867,142 @@ CREATE UNIQUE INDEX "Organization_slug_key" ON "Organization"("slug");
 CREATE UNIQUE INDEX "Plan_code_key" ON "Plan"("code");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Plan_name_key" ON "Plan"("name");
+
+-- CreateIndex
+CREATE INDEX "BillingRequest_orgId_status_idx" ON "BillingRequest"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "Subscription_orgId_idx" ON "Subscription"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Membership_orgId_status_idx" ON "Membership"("orgId", "status");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Membership_userId_orgId_key" ON "Membership"("userId", "orgId");
 
 -- CreateIndex
+CREATE INDEX "Department_orgId_idx" ON "Department"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Team_orgId_idx" ON "Team"("orgId");
+
+-- CreateIndex
+CREATE INDEX "TeamMember_membershipId_idx" ON "TeamMember"("membershipId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "TeamMember_teamId_membershipId_key" ON "TeamMember"("teamId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "Project_orgId_status_idx" ON "Project"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "ProjectMember_membershipId_idx" ON "ProjectMember"("membershipId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ProjectMember_projectId_membershipId_key" ON "ProjectMember"("projectId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "Milestone_projectId_idx" ON "Milestone"("projectId");
+
+-- CreateIndex
+CREATE INDEX "Task_orgId_projectId_idx" ON "Task"("orgId", "projectId");
+
+-- CreateIndex
+CREATE INDEX "Task_orgId_assigneeMembershipId_idx" ON "Task"("orgId", "assigneeMembershipId");
+
+-- CreateIndex
+CREATE INDEX "Task_orgId_status_idx" ON "Task"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "TaskDependency_dependsOnTaskId_idx" ON "TaskDependency"("dependsOnTaskId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "TaskDependency_taskId_dependsOnTaskId_key" ON "TaskDependency"("taskId", "dependsOnTaskId");
+
+-- CreateIndex
+CREATE INDEX "TimeEntry_taskId_idx" ON "TimeEntry"("taskId");
+
+-- CreateIndex
+CREATE INDEX "TimeEntry_membershipId_idx" ON "TimeEntry"("membershipId");
+
+-- CreateIndex
+CREATE INDEX "Comment_orgId_entityType_entityId_idx" ON "Comment"("orgId", "entityType", "entityId");
+
+-- CreateIndex
+CREATE INDEX "Comment_taskId_idx" ON "Comment"("taskId");
+
+-- CreateIndex
+CREATE INDEX "Meeting_orgId_startsAt_idx" ON "Meeting"("orgId", "startsAt");
+
+-- CreateIndex
+CREATE INDEX "MeetingParticipant_membershipId_idx" ON "MeetingParticipant"("membershipId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "MeetingParticipant_meetingId_membershipId_key" ON "MeetingParticipant"("meetingId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "Company_orgId_idx" ON "Company"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Contact_orgId_idx" ON "Contact"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Client_orgId_idx" ON "Client"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Lead_orgId_idx" ON "Lead"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Lead_orgId_status_idx" ON "Lead"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "PipelineStage_orgId_idx" ON "PipelineStage"("orgId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PipelineStage_orgId_order_key" ON "PipelineStage"("orgId", "order");
+
+-- CreateIndex
+CREATE INDEX "Deal_orgId_idx" ON "Deal"("orgId");
+
+-- CreateIndex
+CREATE INDEX "CrmActivity_orgId_entityId_idx" ON "CrmActivity"("orgId", "entityId");
+
+-- CreateIndex
+CREATE INDEX "Job_orgId_status_idx" ON "Job"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "Application_jobId_idx" ON "Application"("jobId");
+
+-- CreateIndex
+CREATE INDEX "Application_stage_idx" ON "Application"("stage");
+
+-- CreateIndex
+CREATE INDEX "Attendance_orgId_date_idx" ON "Attendance"("orgId", "date");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Attendance_membershipId_date_key" ON "Attendance"("membershipId", "date");
+
+-- CreateIndex
+CREATE INDEX "LeaveType_orgId_idx" ON "LeaveType"("orgId");
+
+-- CreateIndex
+CREATE INDEX "LeaveRequest_orgId_membershipId_idx" ON "LeaveRequest"("orgId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "Invoice_orgId_clientId_idx" ON "Invoice"("orgId", "clientId");
+
+-- CreateIndex
+CREATE INDEX "Invoice_orgId_status_idx" ON "Invoice"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "Expense_orgId_membershipId_idx" ON "Expense"("orgId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "Expense_orgId_status_idx" ON "Expense"("orgId", "status");
+
+-- CreateIndex
+CREATE INDEX "ModuleAccess_orgId_role_idx" ON "ModuleAccess"("orgId", "role");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "ModuleAccess_orgId_module_role_key" ON "ModuleAccess"("orgId", "module", "role");
@@ -769,11 +1014,68 @@ CREATE UNIQUE INDEX "OrgPolicy_orgId_key" ON "OrgPolicy"("orgId");
 CREATE INDEX "Holiday_orgId_startDate_idx" ON "Holiday"("orgId", "startDate");
 
 -- CreateIndex
+CREATE INDEX "AttendanceSession_orgId_membershipId_idx" ON "AttendanceSession"("orgId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "AttendanceSession_attendanceId_idx" ON "AttendanceSession"("attendanceId");
+
+-- CreateIndex
+CREATE INDEX "SessionTaskEntry_sessionId_idx" ON "SessionTaskEntry"("sessionId");
+
+-- CreateIndex
+CREATE INDEX "SessionTaskEntry_taskId_idx" ON "SessionTaskEntry"("taskId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "BoardColumn_orgId_surface_key_key" ON "BoardColumn"("orgId", "surface", "key");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "BoardColumn_orgId_surface_order_key" ON "BoardColumn"("orgId", "surface", "order");
+
+-- CreateIndex
+CREATE INDEX "PayrollRun_orgId_status_idx" ON "PayrollRun"("orgId", "status");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "PayrollRun_orgId_period_key" ON "PayrollRun"("orgId", "period");
 
 -- CreateIndex
+CREATE INDEX "Payslip_membershipId_idx" ON "Payslip"("membershipId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Payslip_runId_membershipId_key" ON "Payslip"("runId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "SalaryComponent_orgId_membershipId_idx" ON "SalaryComponent"("orgId", "membershipId");
+
+-- CreateIndex
+CREATE INDEX "Announcement_orgId_createdAt_idx" ON "Announcement"("orgId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Notification_userId_readAt_idx" ON "Notification"("userId", "readAt");
+
+-- CreateIndex
+CREATE INDEX "Notification_orgId_userId_readAt_idx" ON "Notification"("orgId", "userId", "readAt");
+
+-- CreateIndex
+CREATE INDEX "Document_orgId_idx" ON "Document"("orgId");
+
+-- CreateIndex
+CREATE INDEX "Document_orgId_folder_idx" ON "Document"("orgId", "folder");
+
+-- CreateIndex
+CREATE INDEX "Document_orgId_projectId_idx" ON "Document"("orgId", "projectId");
+
+-- CreateIndex
+CREATE INDEX "ActivityLog_orgId_entityType_entityId_idx" ON "ActivityLog"("orgId", "entityType", "entityId");
+
+-- CreateIndex
+CREATE INDEX "ActivityLog_orgId_createdAt_idx" ON "ActivityLog"("orgId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "AuditLog_orgId_createdAt_idx" ON "AuditLog"("orgId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "ContactMessage_type_status_createdAt_idx" ON "ContactMessage"("type", "status", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "ContactMessage_email_idx" ON "ContactMessage"("email");
 

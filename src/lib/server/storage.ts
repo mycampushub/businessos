@@ -264,6 +264,7 @@ export async function assertStorageQuota(orgId: string, incomingBytes: number): 
   const storageGb = subscription?.plan.storageGb ?? FREE_TIER_STORAGE_GB
   const usedBytes = aggregate._sum.size ?? 0
   if (usedBytes + Math.max(0, incomingBytes) > storageGb * GIB) {
-    throw new ApiError(403, `Storage limit reached for your plan (${storageGb} GB). Free up space or upgrade in Billing & Plan.`)
+    // C5 fix: ApiError constructor signature is (message, status) — args were reversed.
+    throw new ApiError(`Storage limit reached for your plan (${storageGb} GB). Free up space or upgrade in Billing & Plan.`, 403)
   }
 }

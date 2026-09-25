@@ -108,11 +108,15 @@ export default function HrAttendanceView() {
   const attData = useData<AttendanceData>(`/api/hr/attendance?date=${dateStr}`, [dateStr])
   // trend only exists for users with dashboard access (MANAGER/HR default) — hidden otherwise, failures silent
   const dashData = useData<{ attendanceTrend: TrendPoint[] }>(showTrend ? '/api/dashboard' : null, [showTrend])
-  // T5-c: month-to-date rows for the late-this-month summary — same attendance API,
-  // counted client-side (the policy endpoint is admin-only and stays untouched).
+  // T5-c + L24-fe: month-to-date rows for the late-this-month summary. The
+  // second attendance fetch is gated behind a hover/focus flag on the "Late
+  // arrivals this month" line so the default page load only fires ONE
+  // attendance request. Once hovered (or keyboard-focused), the flag stays
+  // true for the lifetime of the view so the count persists on re-renders.
+  const [lateHovered, setLateHovered] = useState(false)
   const monthStart = `${todayStr().slice(0, 7)}-01`
   const monthData = useData<{ items: AttendanceRow[] }>(
-    `/api/hr/attendance?from=${monthStart}&to=${todayStr()}`
+    lateHovered ? `/api/hr/attendance?from=${monthStart}&to=${todayStr()}` : null
   )
   const monthPrefix = todayStr().slice(0, 7)
   const lateThisMonth = (monthData.data?.items ?? []).filter(
@@ -204,12 +208,25 @@ export default function HrAttendanceView() {
           <strong className="font-semibold text-foreground">{minutesToHours(loading ? null : totalWorked)}</strong>
           {items.length > 0 && <> across {items.length} record{items.length === 1 ? '' : 's'}</>}
         </p>
-        <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite">
+        <p
+          className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
+          aria-live="polite"
+        >
           <CalendarDays className="size-3.5" aria-hidden />
-          Late arrivals this month:
-          <strong className="font-semibold text-foreground">
-            {monthData.loading && !monthData.data ? '…' : lateThisMonth}
-          </strong>
+          <span
+            // L24-fe: lazy-load the month attendance — only fetch when the user
+            // actually interacts with this line (hover or keyboard focus). The
+            // flag stays true for the lifetime of the view.
+            tabIndex={0}
+            onMouseEnter={() => setLateHovered(true)}
+            onFocus={() => setLateHovered(true)}
+            className="inline-flex items-center gap-1.5 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Late arrivals this month:
+            <strong className="font-semibold text-foreground">
+              {lateHovered && monthData.loading && !monthData.data ? '…' : lateThisMonth}
+            </strong>
+          </span>
           <span aria-hidden>·</span>
           <span>penalties apply in payroll per organization rules</span>
         </p>

@@ -6,6 +6,24 @@ import { meetingInclude, meetingItem, orgParticipants, parseParticipantIds, form
 
 type RouteParams = { params: Promise<{ id: string }> }
 
+/** GET /api/meetings/[id] — single meeting (deep-link from notifications etc.).
+ *  Module gate: meetings view-minimum; verifies the meeting belongs to the org via
+ *  findFirst({ where: { id, orgId: org.id } }) and returns it with participants
+ *  resolved through the shared meetingInclude + meetingItem helpers. */
+export async function GET(req: NextRequest, route: RouteParams): Promise<NextResponse> {
+  const { id } = await route.params
+  return withAuth(async (_r, ctx) => {
+    const { org } = requireOrg(ctx)
+    const denied = requireAccess(ctx, 'meetings', 'view')
+    if (denied) return denied
+
+    const meeting = await db.meeting.findFirst({ where: { id, orgId: org.id }, include: meetingInclude })
+    if (!meeting) return fail('Meeting not found', 404)
+
+    return ok(meetingItem(meeting))
+  })(req)
+}
+
 /** PATCH /api/meetings/[id] — update (meetings full).
  *  body: { title?, startsAt?, durationMins?, agenda? ≤2000, notes? ≤8000, projectId?|null (clears),
  *          participants?: membershipId[] ≤50 — REPLACES the whole set }
@@ -61,12 +79,18 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
       const rows = await orgParticipants(org.id, ids)
       if (rows.length !== ids.length) return fail('Unknown participant', 422)
       newRows = rows
-      update.participants = ids.length ? ids.join(',') : null
+      // H12-db fix: replace participants via the join table (delete all + recreate)
+      await db.meetingParticipant.deleteMany({ where: { meetingId: meeting.id } })
+      if (ids.length) {
+        await db.meetingParticipant.createMany({
+          data: ids.map((id) => ({ meetingId: meeting.id, membershipId: id })),
+        })
+      }
     }
 
-    if (Object.keys(update).length === 0) return fail('No valid fields to update', 422)
+    if (Object.keys(update).length === 0 && newRows === null) return fail('No valid fields to update', 422)
 
-    const oldIds = parseParticipantIds(meeting.participants)
+    const oldIds = meeting.meetingParticipants.map((mp) => mp.membershipId)
     const updated = await db.meeting.update({ where: { id: meeting.id }, data: update, include: meetingInclude })
 
     const title = (update.title as string) ?? meeting.title
@@ -99,10 +123,8 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
       message: `${title} updated`,
     })
 
-    const item = meetingItem(
-      updated,
-      newRows ? newRows.map(({ userId: _userId, ...rest }) => rest) : await orgParticipants(org.id, parseParticipantIds(updated.participants))
-    )
+    // H12-db fix: meetingItem now resolves participants from the join table automatically
+    const item = meetingItem(updated)
     return ok(item)
   })(req)
 }

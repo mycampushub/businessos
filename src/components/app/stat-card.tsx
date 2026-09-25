@@ -49,7 +49,7 @@ export function StatCard({
           {loading ? (
             <Skeleton className="mt-2 h-8 w-24" />
           ) : (
-            <p className="mt-1.5 truncate text-2xl font-semibold tracking-tight">{value}</p>
+            <p className="mt-1.5 text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
           )}
           {sub && !loading && <p className="mt-1 truncate text-xs text-muted-foreground">{sub}</p>}
         </div>

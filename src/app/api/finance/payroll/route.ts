@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, fail, withAuth, requireOrg, body, str, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
+import { ok, fail, withAuth, requireOrg, requireRole, body, str, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { localDateKey } from '@/lib/server/tz'
 import { round2, money, runItem, runListInclude, runDetail, buildPayslipRows } from './payroll-helpers'
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/ // "YYYY-MM"
@@ -21,16 +22,38 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
 })
 
 // POST /api/finance/payroll — create a DRAFT run + payslips for every ACTIVE member, finance-payroll FULL
+// DA-M1 fix: add role gate (OWNER/ADMIN/FINANCE only) as defense-in-depth alongside module access
 export const POST = withAuth(async (req: NextRequest, ctx) => {
   const { membership, org } = requireOrg(ctx)
   const denied = requireAccess(ctx, 'finance-payroll', 'full')
   if (denied) return denied
+  requireRole(ctx, ['ADMIN', 'FINANCE']) // DA-M1 fix: only OWNER/ADMIN/FINANCE can run payroll
 
   const b = await body(req)
   const period = str(b.period, 'period', { max: 7 })
   if (!PERIOD_RE.test(period)) return fail('Use YYYY-MM', 422)
   const note =
     b.note === undefined || b.note === null ? null : str(b.note, 'note', { required: false, max: 500 }) || null
+
+  // M22 fix: period sanity — must be within [org.createdAt year-month, current
+  // org-local month + 1]. Blocks future payroll runs (no attendance to bill yet)
+  // and pre-history runs (the org didn't exist). The +1 lets accounting close
+  // the current month in advance.
+  const orgRow = await db.organization.findUnique({
+    where: { id: org.id },
+    select: { createdAt: true, timezone: true },
+  })
+  if (orgRow) {
+    const minPeriod = `${orgRow.createdAt.getUTCFullYear()}-${String(orgRow.createdAt.getUTCMonth() + 1).padStart(2, '0')}`
+    const nowKey = localDateKey(new Date(), orgRow.timezone) // YYYY-MM-DD in org tz
+    const [yy, mm] = nowKey.split('-').map(Number)
+    const nextMonth = mm === 12 ? 1 : mm + 1
+    const nextMonthYear = mm === 12 ? yy + 1 : yy
+    const maxPeriod = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}`
+    if (period < minPeriod || period > maxPeriod) {
+      return fail(`Period must be between ${minPeriod} and ${maxPeriod}`, 422)
+    }
+  }
 
   // org-scoped unique period
   const dupe = await db.payrollRun.findFirst({ where: { orgId: org.id, period } })

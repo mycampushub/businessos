@@ -44,15 +44,32 @@ export function toParticipantItems(rows: ParticipantRow[]): ParticipantItem[] {
 export const meetingInclude = {
   project: { select: { id: true, name: true, color: true } },
   createdBy: { select: { id: true, user: { select: { name: true } } } },
+  // H12-db fix: include participants from the join table (was CSV string)
+  meetingParticipants: {
+    select: {
+      membershipId: true,
+      membership: { select: { id: true, user: { select: { name: true, avatarUrl: true } } } },
+    },
+  },
 } as const
 
 export type MeetingRow = Meeting & {
   project: { id: string; name: string; color: string | null } | null
   createdBy: { id: string; user: { name: string } } | null
+  meetingParticipants: Array<{
+    membershipId: string
+    membership: { id: string; user: { name: string; avatarUrl: string | null } }
+  }>
 }
 
 /** Canonical meeting item shape returned by every meetings endpoint. */
-export function meetingItem(m: MeetingRow, participants: ParticipantItem[]) {
+export function meetingItem(m: MeetingRow, participants?: ParticipantItem[]) {
+  // H12-db fix: resolve participants from the join table if not explicitly passed
+  const parts = participants ?? m.meetingParticipants.map((mp) => ({
+    id: mp.membership.id,
+    name: mp.membership.user.name,
+    avatarUrl: mp.membership.user.avatarUrl,
+  }))
   return {
     id: m.id,
     title: m.title,
@@ -63,33 +80,19 @@ export function meetingItem(m: MeetingRow, participants: ParticipantItem[]) {
     projectId: m.projectId,
     projectName: m.project?.name ?? null,
     projectColor: m.project?.color ?? null,
+    // H9-fe: expose the creator's membership id so the frontend can compare
+    // identity by id instead of relying on a fragile name string match.
+    createdByMembershipId: m.createdBy?.id ?? null,
     createdByName: m.createdBy?.user.name ?? null,
-    participants,
-    participantCount: participants.length,
+    participants: parts,
+    participantCount: parts.length,
     createdAt: m.createdAt.toISOString(),
   }
 }
 
-/** Map a batch of meetings → items with one bulk participant lookup. */
-export async function meetingListItems(orgId: string, meetings: MeetingRow[]) {
-  const allIds = meetings.flatMap((m) => parseParticipantIds(m.participants))
-  const unique = [...new Set(allIds)]
-  const rows = unique.length
-    ? await db.membership.findMany({
-        where: { id: { in: unique }, orgId },
-        select: { id: true, user: { select: { name: true, avatarUrl: true } } },
-      })
-    : []
-  const byId = new Map(rows.map((r) => [r.id, r]))
-  return meetings.map((m) => {
-    const participants = parseParticipantIds(m.participants)
-      .map((id) => {
-        const row = byId.get(id)
-        return row ? { id, name: row.user.name, avatarUrl: row.user.avatarUrl } : null
-      })
-      .filter((p): p is ParticipantItem => p !== null)
-    return meetingItem(m, participants)
-  })
+/** Map a batch of meetings → items. H12-db fix: participants now come from the join table. */
+export async function meetingListItems(_orgId: string, meetings: MeetingRow[]) {
+  return meetings.map((m) => meetingItem(m))
 }
 
 /** "Sep 12, 2026, 2:30 PM" — used in meeting notifications + search subtitles. */

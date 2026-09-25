@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import { randomBytes } from 'crypto'
 import { db } from '@/lib/db'
-import { ok, fail, withAuth, requireOrg, requireRole, body, str, logActivity, audit, notifyUsers } from '@/lib/server/api'
+import { ok, fail, withAuth, requireOrg, requireRole, body, str, logActivity, audit, notifyUsers, ApiError } from '@/lib/server/api'
 import { hashPassword } from '@/lib/server/auth'
 import { assertSeatLimit } from '@/lib/server/billing'
 import { ALL_ROLES } from '@/lib/roles'
@@ -54,70 +54,104 @@ export async function POST(req: NextRequest) {
       select: { id: true, email: true, name: true },
     })
 
-    let tempPassword: string | undefined
-    if (!user) {
-      tempPassword = generateTempPassword()
-      user = await db.user.create({
-        data: {
-          email,
-          name: name ?? nameFromEmail(email),
-          passwordHash: hashPassword(tempPassword),
-        },
-        select: { id: true, email: true, name: true },
+    // 409 when this user already belongs to the org (checked BEFORE any user creation).
+    if (user) {
+      const alreadyMember = await db.membership.findFirst({
+        where: { userId: user.id, orgId: org.id },
+        select: { id: true },
       })
+      if (alreadyMember) return fail('This user is already a member of your organization', 409)
     }
 
-    // 409 when this user already belongs to the org (checked before any mutation)
-    const existing = await db.membership.findFirst({
-      where: { userId: user.id, orgId: org.id },
-      select: { id: true },
-    })
-    if (existing) return fail('This user is already a member of your organization', 409)
-
-    // plan seat limit — throws ApiError(403) which withAuth renders as-is
+    // M14 fix: assert the seat limit BEFORE creating a temp user so an over-seat org
+    // does not leave an orphaned User row behind when this throws 403.
     await assertSeatLimit(org.id)
 
-    const created = await db.membership.create({
-      data: {
-        userId: user.id,
-        orgId: org.id,
-        role,
-        title,
-        status: 'ACTIVE',
-      },
-      select: {
-        id: true,
-        userId: true,
-        orgId: true,
-        role: true,
-        title: true,
-        status: true,
-        employmentType: true,
-        joinedAt: true,
-        user: { select: { id: true, name: true, email: true } },
-      },
+    let tempPassword: string | undefined
+    if (!user) tempPassword = generateTempPassword()
+
+    // M14 fix: wrap user-creation + membership-creation in a transaction so a late
+    // failure (e.g. a concurrent invite creating the same membership) rolls back
+    // the temp user instead of orphaning it.
+    const created = await db.$transaction(async (tx) => {
+      let userId: string
+      let userName: string
+      let userEmail: string
+      if (!user) {
+        const createdUser = await tx.user.create({
+          data: {
+            email,
+            name: name ?? nameFromEmail(email),
+            passwordHash: hashPassword(tempPassword!),
+            // MA-1 #9 fix: auto-verify invited users (sandbox — no SMTP). The C16 emailVerified
+            // gate in withAuth would otherwise permanently lock them out of /app.
+            emailVerified: new Date(),
+          },
+          select: { id: true, email: true, name: true },
+        })
+        userId = createdUser.id
+        userName = createdUser.name
+        userEmail = createdUser.email
+      } else {
+        userId = user.id
+        userName = user.name
+        userEmail = user.email
+      }
+
+      // re-check membership inside the transaction to handle the race where a
+      // concurrent invite created the membership between our outer check and now.
+      const raced = await tx.membership.findFirst({
+        where: { userId, orgId: org.id },
+        select: { id: true },
+      })
+      if (raced) throw new ApiError('This user is already a member of your organization', 409)
+
+      const membership = await tx.membership.create({
+        data: {
+          userId,
+          orgId: org.id,
+          role,
+          title,
+          status: 'ACTIVE',
+        },
+        select: {
+          id: true,
+          userId: true,
+          orgId: true,
+          role: true,
+          title: true,
+          status: true,
+          employmentType: true,
+          joinedAt: true,
+          user: { select: { id: true, name: true, email: true } },
+        },
+      })
+      return { membership, userName, userEmail }
     })
+
+    const { membership: createdMembership, userName, userEmail } = created
 
     await logActivity({
       orgId: org.id,
       actorMembershipId: membership.id,
       action: 'member.invited',
       entityType: 'MEMBERSHIP',
-      entityId: created.id,
-      message: `${user.name} added to ${org.name} as ${role}`,
+      entityId: createdMembership.id,
+      message: `${userName} added to ${org.name} as ${role}`,
     })
     await audit({
       orgId: org.id,
       actorMembershipId: membership.id,
       action: 'member.invited',
       entity: 'MEMBERSHIP',
-      entityId: created.id,
-      newValues: { userId: user.id, email: user.email, role, title, status: 'ACTIVE' },
+      entityId: createdMembership.id,
+      newValues: { userId: createdMembership.userId, email: userEmail, role, title, status: 'ACTIVE' },
+      impersonatedBy: ctx.session?.impersonatedBy?.id ?? null, // MA-1 #8 fix
     })
-    if (user.id !== ctx.user.id) {
+    if (createdMembership.userId !== ctx.user.id) {
       await notifyUsers({
         orgId: org.id,
-        userIds: [user.id],
+        userIds: [createdMembership.userId],
         type: 'SYSTEM',
         title: `You were added to ${org.name}`,
         body: `You now have ${role.charAt(0) + role.slice(1).toLowerCase()} access. Set up your profile to get started.`,
@@ -125,6 +159,6 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    return ok({ membership: created, ...(tempPassword ? { tempPassword } : {}) }, 201)
+    return ok({ membership: createdMembership, ...(tempPassword ? { tempPassword } : {}) }, 201)
   })(req)
 }

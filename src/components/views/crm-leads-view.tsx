@@ -40,6 +40,8 @@ import {
   BadgeCheck, Banknote, Building2, ChevronDown, MoreHorizontal, Pencil, Plus, Search,
   Sparkles, Trash2, Users,
 } from 'lucide-react'
+import { leadSchema } from '@/lib/validations'
+import { useFormErrors } from '@/lib/client/use-form-errors'
 
 // ---------- local types ----------
 
@@ -107,6 +109,7 @@ export default function CrmLeadsView() {
   const [editing, setEditing] = useState<LeadItem | null>(null)
   const [form, setForm] = useState<LeadForm>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
+  const { errors, validate, clearError, clearAll } = useFormErrors()
   const [deleting, setDeleting] = useState<LeadItem | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [converting, setConverting] = useState<LeadItem | null>(null)
@@ -116,6 +119,7 @@ export default function CrmLeadsView() {
   function openCreate() {
     setEditing(null)
     setForm(EMPTY_FORM)
+    clearAll()
     setFormOpen(true)
   }
 
@@ -130,10 +134,18 @@ export default function CrmLeadsView() {
       value: lead.value != null ? String(lead.value) : '',
       notes: lead.notes ?? '',
     })
+    clearAll()
     setFormOpen(true)
   }
 
   async function saveLead() {
+    // M14-fe: zod validation layer — existing toast fallbacks are kept
+    // below as a second line of defense for fields the schema doesn't cover
+    // (or for cases where the schema is intentionally permissive).
+    if (!validate(leadSchema, form)) {
+      toast({ title: 'Please fix the highlighted fields', variant: 'destructive' })
+      return
+    }
     if (!form.name.trim()) {
       toast({ title: 'Name is required', description: 'Please give the lead a name.', variant: 'destructive' })
       return
@@ -220,13 +232,29 @@ export default function CrmLeadsView() {
     setDeleting(null)
     try {
       await api(`/api/crm/leads/${lead.id}`, { method: 'DELETE' })
-      toast({ title: 'Lead deleted', description: `${lead.name} was removed.` })
+      // M15-fe: undo toast — soft-delete allows restore within 5s
+      toast({
+        title: 'Lead deleted',
+        description: `${lead.name} was removed.`,
+        duration: 5000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            api(`/api/crm/leads/${lead.id}/restore`, { method: 'POST', silent: true })
+              .then(() => { toast({ title: 'Lead restored' }); refresh() })
+              .catch(() => toast({ title: 'Could not restore', variant: 'destructive' }))
+          },
+        },
+      })
       refresh()
     } catch {
     }
   }
 
-  const setF = (k: keyof LeadForm) => (v: string) => setForm((f) => ({ ...f, [k]: v }))
+  const setF = (k: keyof LeadForm) => (v: string) => {
+    setForm((f) => ({ ...f, [k]: v }))
+    clearError(k)
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -336,7 +364,7 @@ export default function CrmLeadsView() {
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow>
+                <TableRow className="sticky top-0 z-10 bg-background">
                   <TableHead className="min-w-44">Lead</TableHead>
                   <TableHead className="min-w-48">Contact</TableHead>
                   <TableHead className="min-w-32">Source</TableHead>
@@ -459,42 +487,102 @@ export default function CrmLeadsView() {
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
               <Label htmlFor="lead-name">Name *</Label>
-              <Input id="lead-name" value={form.name} onChange={(e) => setF('name')(e.target.value)} placeholder="e.g. Zaman Khan" />
+              <Input
+                id="lead-name"
+                value={form.name}
+                onChange={(e) => setF('name')(e.target.value)}
+                placeholder="e.g. Zaman Khan"
+                aria-invalid={!!errors.name}
+                aria-describedby={errors.name ? 'lead-name-error' : undefined}
+              />
+              {errors.name && <p id="lead-name-error" className="text-xs text-destructive" role="alert">{errors.name}</p>}
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="lead-company">Company</Label>
-                <Input id="lead-company" value={form.company} onChange={(e) => setF('company')(e.target.value)} placeholder="e.g. UrbanCart" />
+                <Input
+                  id="lead-company"
+                  value={form.company}
+                  onChange={(e) => setF('company')(e.target.value)}
+                  placeholder="e.g. UrbanCart"
+                  aria-invalid={!!errors.company}
+                  aria-describedby={errors.company ? 'lead-company-error' : undefined}
+                />
+                {errors.company && <p id="lead-company-error" className="text-xs text-destructive" role="alert">{errors.company}</p>}
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="lead-source">Source</Label>
                 <Select value={form.source} onValueChange={setF('source')}>
-                  <SelectTrigger id="lead-source" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger
+                    id="lead-source"
+                    className="w-full"
+                    aria-invalid={!!errors.source}
+                    aria-describedby={errors.source ? 'lead-source-error' : undefined}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
                     {LEAD_SOURCES.map((s) => (
                       <SelectItem key={s} value={s}>{LEAD_SOURCE_LABELS[s]}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {errors.source && <p id="lead-source-error" className="text-xs text-destructive" role="alert">{errors.source}</p>}
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="lead-email">Email</Label>
-                <Input id="lead-email" type="email" value={form.email} onChange={(e) => setF('email')(e.target.value)} placeholder="name@company.com" />
+                <Input
+                  id="lead-email"
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => setF('email')(e.target.value)}
+                  placeholder="name@company.com"
+                  aria-invalid={!!errors.email}
+                  aria-describedby={errors.email ? 'lead-email-error' : undefined}
+                />
+                {errors.email && <p id="lead-email-error" className="text-xs text-destructive" role="alert">{errors.email}</p>}
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="lead-phone">Phone</Label>
-                <Input id="lead-phone" value={form.phone} onChange={(e) => setF('phone')(e.target.value)} placeholder="+880…" />
+                <Input
+                  id="lead-phone"
+                  value={form.phone}
+                  onChange={(e) => setF('phone')(e.target.value)}
+                  placeholder="+880…"
+                  aria-invalid={!!errors.phone}
+                  aria-describedby={errors.phone ? 'lead-phone-error' : undefined}
+                />
+                {errors.phone && <p id="lead-phone-error" className="text-xs text-destructive" role="alert">{errors.phone}</p>}
               </div>
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="lead-value">Estimated value ({currencySymbol(cur)})</Label>
-              <Input id="lead-value" type="number" min="0" value={form.value} onChange={(e) => setF('value')(e.target.value)} placeholder="0" />
+              <Input
+                id="lead-value"
+                type="number"
+                min="0"
+                value={form.value}
+                onChange={(e) => setF('value')(e.target.value)}
+                placeholder="0"
+                aria-invalid={!!errors.value}
+                aria-describedby={errors.value ? 'lead-value-error' : undefined}
+              />
+              {errors.value && <p id="lead-value-error" className="text-xs text-destructive" role="alert">{errors.value}</p>}
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="lead-notes">Notes</Label>
-              <Textarea id="lead-notes" rows={3} value={form.notes} onChange={(e) => setF('notes')(e.target.value)} placeholder="Context, requirements, follow-ups…" />
+              <Textarea
+                id="lead-notes"
+                rows={3}
+                value={form.notes}
+                onChange={(e) => setF('notes')(e.target.value)}
+                placeholder="Context, requirements, follow-ups…"
+                aria-invalid={!!errors.notes}
+                aria-describedby={errors.notes ? 'lead-notes-error' : undefined}
+              />
+              {errors.notes && <p id="lead-notes-error" className="text-xs text-destructive" role="alert">{errors.notes}</p>}
             </div>
           </div>
           <DialogFooter>

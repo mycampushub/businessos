@@ -49,10 +49,12 @@ import {
   FileText,
   FileType,
   Folder,
+  FolderInput,
   FolderOpen,
   HardDrive,
   Info,
   Loader2,
+  Pencil,
   Search,
   Sheet,
   Trash2,
@@ -139,7 +141,7 @@ const MIMETYPE_OPTIONS: Array<{ value: DocKind; label: string; mime: string | un
 
 /** Client-side mirror of the server MIME allowlist (src/lib/server/storage.ts —
  *  the view cannot import that module directly, it pulls in fs/promises). */
-const ACCEPT_MIME = [
+const ALLOWED_MIME_LIST = [
   'application/pdf',
   'image/png',
   'image/jpeg',
@@ -153,7 +155,47 @@ const ACCEPT_MIME = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/zip',
   'application/json',
-].join(',')
+]
+
+const ALLOWED_MIME_SET = new Set<string>(ALLOWED_MIME_LIST)
+
+/** Common browser/OS aliases normalized onto the canonical allowlist entries. */
+const MIME_ALIASES: Record<string, string> = {
+  'image/jpg': 'image/jpeg',
+  'application/x-zip-compressed': 'application/zip',
+  'text/x-csv': 'text/csv',
+}
+
+/** Extension → allowlist mime, for browsers that report an empty File.type. */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  zip: 'application/zip',
+  json: 'application/json',
+}
+
+const ACCEPT_MIME = ALLOWED_MIME_LIST.join(',')
+
+/** M13-ui: client-side MIME validation — mirrors server-side isAllowedMimeType.
+ *  Browsers sometimes report an empty File.type, so we fall back to extension. */
+function isAllowedClientFile(file: File): boolean {
+  const declared = (file.type ?? '').trim().toLowerCase()
+  if (declared) {
+    return ALLOWED_MIME_SET.has(MIME_ALIASES[declared] ?? declared)
+  }
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  return !!MIME_BY_EXTENSION[ext]
+}
 
 /** Client mirror of MAX_UPLOAD_BYTES — the server re-validates. */
 const MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -165,7 +207,7 @@ const NO_PROJECT = 'none'
 // ---------- view ----------
 
 export default function DocumentsView() {
-  const { membership, role } = useWorkspace()
+  const { membership, role, can } = useWorkspace()
   const { data, loading, error, refresh } = useData<DocumentsData>('/api/documents')
   const { data: projectsData } = useData<{ items: ProjectLite[] }>('/api/projects')
 
@@ -177,6 +219,8 @@ export default function DocumentsView() {
   const [uploadOpen, setUploadOpen] = useState(false)
   const [mode, setMode] = useState<'upload' | 'link'>('upload')
   const [file, setFile] = useState<File | null>(null)
+  // M12-ui/M13-ui: inline file-picker error (oversize or unsupported MIME).
+  const [fileError, setFileError] = useState<string | null>(null)
   const [form, setForm] = useState({
     name: '',
     folderChoice: DEFAULT_FOLDER,
@@ -191,6 +235,14 @@ export default function DocumentsView() {
   const [detailsDoc, setDetailsDoc] = useState<DocItem | null>(null)
   const [deleteDoc, setDeleteDoc] = useState<DocItem | null>(null)
   const [deleting, setDeleting] = useState(false)
+
+  // rename + move-to-project state (small dialogs launched from the details footer)
+  const [renameDoc, setRenameDoc] = useState<DocItem | null>(null)
+  const [renameName, setRenameName] = useState('')
+  const [renameSaving, setRenameSaving] = useState(false)
+  const [moveDoc, setMoveDoc] = useState<DocItem | null>(null)
+  const [moveProjectId, setMoveProjectId] = useState<string>(NO_PROJECT)
+  const [moveSaving, setMoveSaving] = useState(false)
 
   const items = data?.items ?? []
   const folders = data?.folders ?? []
@@ -223,15 +275,19 @@ export default function DocumentsView() {
   const canDelete = (d: DocItem) =>
     !!membership && (d.uploadedById === membership.id || role === 'OWNER' || role === 'ADMIN')
 
+  /** documents FULL access — matches the PATCH /api/documents/[id] server gate.
+   *  Unlike canDelete, this is an org-level capability (no per-doc ownership check). */
+  const canEditDoc = can('documents')
+
   const openUpload = () => {
     setForm((f) => ({ ...f, name: '', newFolder: '', sizeKb: '', notes: '', folderChoice: DEFAULT_FOLDER, projectId: NO_PROJECT, kind: 'pdf' }))
     setFile(null)
+    setFileError(null)
     setMode('upload')
     setUploadOpen(true)
   }
 
   const submitUpload = async () => {
-    console.log('[F6-debug] submitUpload', { mode, hasFile: !!file, fileName: file?.name, name: form.name })
     const folderName =
       form.folderChoice === NEW_FOLDER
         ? form.newFolder.trim()
@@ -293,10 +349,24 @@ export default function DocumentsView() {
 
   const confirmDelete = async () => {
     if (!deleteDoc) return
+    const doc = deleteDoc
     setDeleting(true)
     try {
-      await api(`/api/documents/${deleteDoc.id}`, { method: 'DELETE' })
-      toast({ title: 'Document deleted', description: `${deleteDoc.name} was removed from the library.` })
+      await api(`/api/documents/${doc.id}`, { method: 'DELETE' })
+      // M15-fe: undo toast
+      toast({
+        title: 'Document deleted',
+        description: `${doc.name} was removed from the library.`,
+        duration: 5000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            api(`/api/documents/${doc.id}/restore`, { method: 'POST', silent: true })
+              .then(() => { toast({ title: 'Document restored' }); refresh() })
+              .catch(() => toast({ title: 'Could not restore', variant: 'destructive' }))
+          },
+        },
+      })
       setDeleteDoc(null)
       setDetailsDoc(null)
       refresh()
@@ -304,6 +374,73 @@ export default function DocumentsView() {
       /* api() already toasts */
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const openRename = (d: DocItem) => {
+    setRenameDoc(d)
+    setRenameName(d.name)
+  }
+
+  const submitRename = async () => {
+    if (!renameDoc) return
+    const name = renameName.trim()
+    if (!name) {
+      toast({ title: 'Name required', description: 'Enter a new file name.', variant: 'destructive' })
+      return
+    }
+    if (name === renameDoc.name) {
+      // nothing to do — close without a request
+      setRenameDoc(null)
+      return
+    }
+    setRenameSaving(true)
+    try {
+      await api(`/api/documents/${renameDoc.id}`, { method: 'PATCH', body: { name } })
+      toast({ title: 'Document renamed', description: `Now "${name}".` })
+      // keep the details dialog in sync if it was open
+      if (detailsDoc?.id === renameDoc.id) setDetailsDoc({ ...detailsDoc, name })
+      setRenameDoc(null)
+      refresh()
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setRenameSaving(false)
+    }
+  }
+
+  const openMove = (d: DocItem) => {
+    setMoveDoc(d)
+    setMoveProjectId(d.projectId ?? NO_PROJECT)
+  }
+
+  const submitMove = async () => {
+    if (!moveDoc) return
+    const nextProjectId = moveProjectId === NO_PROJECT ? null : moveProjectId
+    if ((nextProjectId ?? null) === (moveDoc.projectId ?? null)) {
+      // no change — close without a request
+      setMoveDoc(null)
+      return
+    }
+    setMoveSaving(true)
+    try {
+      await api(`/api/documents/${moveDoc.id}`, {
+        method: 'PATCH',
+        body: { projectId: nextProjectId },
+      })
+      const projectName = nextProjectId ? projects.find((p) => p.id === nextProjectId)?.name ?? 'project' : 'unfiled'
+      toast({ title: 'Document moved', description: `"${moveDoc.name}" is now in ${projectName}.` })
+      // keep the details dialog in sync if it was open
+      if (detailsDoc?.id === moveDoc.id) {
+        const proj = nextProjectId ? projects.find((p) => p.id === nextProjectId) ?? null : null
+        setDetailsDoc({ ...detailsDoc, projectId: nextProjectId, project: proj })
+      }
+      setMoveDoc(null)
+      refresh()
+    } catch {
+      /* api() already toasts */
+    } finally {
+      setMoveSaving(false)
     }
   }
 
@@ -542,7 +679,7 @@ export default function DocumentsView() {
             <DialogDescription>Upload a real file, or register metadata only.</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4">
-            <Tabs value={mode} onValueChange={(v) => setMode(v === 'link' ? 'link' : 'upload')}>
+            <Tabs value={mode} onValueChange={(v) => { setMode(v === 'link' ? 'link' : 'upload'); setFileError(null) }}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="upload">
                   <CloudUpload className="size-4" aria-hidden />
@@ -562,10 +699,33 @@ export default function DocumentsView() {
                     accept={ACCEPT_MIME}
                     onChange={(e) => {
                       const picked = e.target.files?.[0] ?? null
+                      if (!picked) {
+                        setFile(null)
+                        setFileError(null)
+                        return
+                      }
+                      // M13-ui: client-side MIME validation (declared type first,
+                      // extension fallback for browsers that report empty types).
+                      if (!isAllowedClientFile(picked)) {
+                        setFile(null)
+                        setFileError(`Unsupported file type. Allowed: PDF, images, Office docs, text/CSV, ZIP or JSON.`)
+                        // reset the input so the same file can be re-picked after a fix
+                        e.target.value = ''
+                        return
+                      }
+                      // M12-ui: surface oversize error inline as well (the submit
+                      // button also stays disabled when this is true).
+                      if (picked.size > MAX_FILE_BYTES) {
+                        setFileError(`File is ${fmtSize(picked.size)} — exceeds the 25 MB limit.`)
+                      } else {
+                        setFileError(null)
+                      }
                       setFile(picked)
-                      if (picked) setForm((f) => ({ ...f, name: picked.name }))
+                      setForm((f) => ({ ...f, name: picked.name }))
                     }}
                     aria-label="Choose a file to upload"
+                    aria-invalid={!!fileError || undefined}
+                    aria-describedby={fileError ? 'doc-file-error' : undefined}
                   />
                   {file && (
                     <p className="text-xs text-muted-foreground">
@@ -573,6 +733,12 @@ export default function DocumentsView() {
                       {file.size > MAX_FILE_BYTES && (
                         <span className="font-medium text-destructive"> — exceeds the 25 MB limit</span>
                       )}
+                    </p>
+                  )}
+                  {/* M12-ui/M13-ui: inline file-picker error. */}
+                  {fileError && (
+                    <p id="doc-file-error" role="alert" className="text-xs font-medium text-destructive">
+                      {fileError}
                     </p>
                   )}
                   <p className="text-xs text-muted-foreground">
@@ -692,7 +858,10 @@ export default function DocumentsView() {
             <Button variant="outline" onClick={() => setUploadOpen(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={submitUpload} disabled={saving || (mode === 'upload' && !file)}>
+            <Button
+              onClick={submitUpload}
+              disabled={saving || (mode === 'upload' && !file) || (mode === 'upload' && !!file && file.size > MAX_FILE_BYTES) || !!fileError}
+            >
               {saving ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden />
               ) : (
@@ -786,7 +955,7 @@ export default function DocumentsView() {
                 )}
               </div>
               <DialogFooter>
-                <div className="mr-auto flex items-center gap-2">
+                <div className="mr-auto flex flex-wrap items-center gap-2">
                   {detailsDoc.storageKey && (
                     <Button asChild>
                       <a href={`/api/documents/${detailsDoc.id}/download`} download>
@@ -794,6 +963,18 @@ export default function DocumentsView() {
                         Download
                       </a>
                     </Button>
+                  )}
+                  {canEditDoc && (
+                    <>
+                      <Button variant="outline" onClick={() => openRename(detailsDoc)}>
+                        <Pencil className="size-4" aria-hidden />
+                        Rename
+                      </Button>
+                      <Button variant="outline" onClick={() => openMove(detailsDoc)}>
+                        <FolderInput className="size-4" aria-hidden />
+                        Move
+                      </Button>
+                    </>
                   )}
                   {canDelete(detailsDoc) && (
                     <Button
@@ -840,6 +1021,95 @@ export default function DocumentsView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* rename dialog */}
+      <Dialog open={!!renameDoc} onOpenChange={(open) => !open && setRenameDoc(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename document</DialogTitle>
+            <DialogDescription>Give the file a new name. The stored bytes are not affected.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="doc-rename">File name</Label>
+            <Input
+              id="doc-rename"
+              value={renameName}
+              onChange={(e) => setRenameName(e.target.value)}
+              placeholder="e.g. MSA — Acme (signed).pdf"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void submitRename()
+                }
+              }}
+            />
+            {renameName.trim().length > 255 && (
+              <p className="text-xs text-destructive">Name must be 255 characters or fewer.</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameDoc(null)} disabled={renameSaving}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void submitRename()}
+              disabled={renameSaving || !renameName.trim() || renameName.trim().length > 255}
+            >
+              {renameSaving ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Pencil className="size-4" aria-hidden />
+              )}
+              {renameSaving ? 'Saving…' : 'Save name'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* move-to-project dialog */}
+      <Dialog open={!!moveDoc} onOpenChange={(open) => !open && setMoveDoc(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move document</DialogTitle>
+            <DialogDescription>
+              Re-file “{moveDoc?.name}” under a different project, or unfile it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="doc-move">Project</Label>
+            <Select value={moveProjectId} onValueChange={setMoveProjectId}>
+              <SelectTrigger id="doc-move" className="w-full" aria-label="Move to project">
+                <SelectValue placeholder="Select project" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PROJECT}>No project (unfiled)</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {projects.length === 0 && (
+              <p className="text-xs text-muted-foreground">No projects available — pick “unfiled” to clear the link.</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMoveDoc(null)} disabled={moveSaving}>
+              Cancel
+            </Button>
+            <Button onClick={() => void submitMove()} disabled={moveSaving}>
+              {moveSaving ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <FolderInput className="size-4" aria-hidden />
+              )}
+              {moveSaving ? 'Moving…' : 'Move document'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

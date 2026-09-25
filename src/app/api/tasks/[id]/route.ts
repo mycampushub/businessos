@@ -17,6 +17,7 @@ import {
 import { getTaskColumns, doneKeys } from '@/lib/server/columns'
 import { recomputeProjectProgress, syncMilestoneStatus, taskWindowError } from '@/lib/server/task-flows'
 import { canAccessTask } from '@/lib/server/projects-access'
+import { requireAccess } from '@/lib/server/access'
 
 const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] as const
 const DEP_TYPES = ['FS', 'SS', 'FF', 'SF'] as const
@@ -148,6 +149,9 @@ export async function PATCH(req: NextRequest, route: RouteParams): Promise<NextR
   const { id } = await route.params
   return withAuth(async (_req, ctx) => {
     const { membership, org } = requireOrg(ctx)
+    // DA-M2 fix: module-access gate — blocks users whose tasks access is HIDDEN
+    const denied = requireAccess(ctx, 'tasks', 'view')
+    if (denied) return denied
 
     const task = await db.task.findFirst({
       where: { id, orgId: org.id },
@@ -505,6 +509,9 @@ export async function DELETE(req: NextRequest, route: RouteParams): Promise<Next
   const { id } = await route.params
   return withAuth(async (_req, ctx) => {
     const { membership, org } = requireOrg(ctx)
+    // DA-M2 fix: module-access gate — blocks users whose tasks access is HIDDEN
+    const denied = requireAccess(ctx, 'tasks', 'view')
+    if (denied) return denied
 
     const task = await db.task.findFirst({
       where: { id, orgId: org.id },
@@ -518,7 +525,8 @@ export async function DELETE(req: NextRequest, route: RouteParams): Promise<Next
       isOwner || membership.role === 'OWNER' || membership.role === 'ADMIN' || membership.role === 'MANAGER'
     if (!canDelete) return fail('Insufficient permissions', 403)
 
-    await db.task.delete({ where: { id: task.id } })
+    // M15-fe: soft-delete instead of hard-delete (enables undo)
+    await db.task.update({ where: { id: task.id }, data: { deletedAt: new Date() } })
 
     await logActivity({
       orgId: org.id,

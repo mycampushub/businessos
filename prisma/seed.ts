@@ -4,6 +4,10 @@ import { randomUUID, scryptSync } from 'crypto'
 
 const db = new PrismaClient()
 
+// C7 fix: money is stored as Int (cents). The seed arrays use human-readable taka amounts;
+// this helper converts to cents at the DB-write boundary.
+const C = (n: number | null | undefined): number | null => (n === null || n === undefined ? null : Math.round(n * 100))
+
 function hashPassword(password: string): string {
   const salt = randomUUID().replace(/-/g, '')
   const hash = scryptSync(password, salt, 64).toString('hex')
@@ -121,7 +125,7 @@ async function main() {
       website: 'https://meridianlabs.example',
       country: 'Bangladesh',
       currency: 'BDT',
-      plan: 'Growth',
+      plan: 'GROWTH', // H13-db fix: store Plan.code (UPPERCASE) not Plan.name
       foundedYear: 2019,
       ownerId: users['owner@orgos.dev'].id,
     },
@@ -162,7 +166,7 @@ async function main() {
     ['meher@orgos.dev', 'EMPLOYEE', 'Backend Developer', 'Technology', 'farhan@orgos.dev', 'FULL_TIME', 'MER-008', -300],
     ['imran@orgos.dev', 'EMPLOYEE', 'QA Engineer', 'Technology', 'farhan@orgos.dev', 'FULL_TIME', 'MER-009', -210],
     ['tania@orgos.dev', 'EMPLOYEE', 'Product Designer', 'Design', 'maria@orgos.dev', 'FULL_TIME', 'MER-010', -180],
-    ['zahin@orgos.dev', 'EMPLOYEE', 'Marketing Executive', 'Marketing', 'arif@orgos.dev', 'FULL_TIME', 'MER-011', -120],
+    ['zahin@orgos.dev', 'INTERN', 'Marketing Intern', 'Marketing', 'arif@orgos.dev', 'FULL_TIME', 'MER-011', -120], // L36-db fix: was EMPLOYEE — changed to INTERN for full role coverage
     ['lubna@orgos.dev', 'CONTRACTOR', 'Content Writer', 'Marketing', 'arif@orgos.dev', 'FREELANCE', 'MER-012', -90],
   ] as const
   // create without manager first, then link
@@ -222,7 +226,7 @@ async function main() {
       orgType: 'Studio',
       country: 'Bangladesh',
       currency: 'BDT',
-      plan: 'Starter',
+      plan: 'STARTER', // H13-db fix: store Plan.code (UPPERCASE) not Plan.name
       foundedYear: 2024,
       ownerId: users['owner@orgos.dev'].id,
     },
@@ -236,7 +240,7 @@ async function main() {
   })
   const nwStage = await db.pipelineStage.create({ data: { orgId: northwind.id, name: 'New', order: 0 } })
   const nwProject = await db.project.create({
-    data: { orgId: northwind.id, name: 'Aurora Coffee Rebrand', code: 'NW-001', description: 'Full brand identity refresh for a specialty coffee chain.', managerMembershipId: nwMember.id, status: 'ACTIVE', priority: 'HIGH', budget: 300000, startDate: daysAgo(30), endDate: daysAhead(40), progress: 40, color: '#f59e0b' },
+    data: { orgId: northwind.id, name: 'Aurora Coffee Rebrand', code: 'NW-001', description: 'Full brand identity refresh for a specialty coffee chain.', managerMembershipId: nwMember.id, status: 'ACTIVE', priority: 'HIGH', budget: C(300000) as number, startDate: daysAgo(30), endDate: daysAhead(40), progress: 40, color: '#f59e0b' },
   })
   const nwTasks: Array<[string, string, number, number]> = [
     ['Discovery workshop', 'DONE', -28, -25],
@@ -252,6 +256,7 @@ async function main() {
         orgId: northwind.id, projectId: nwProject.id, title, status,
         assigneeMembershipId: status === 'DONE' || status === 'IN_PROGRESS' ? nwMember2.id : nwMember.id,
         creatorMembershipId: nwMember.id, priority: 'MEDIUM', startDate: daysAgo(-s), dueDate: daysAgo(-e),
+        ...(status === 'DONE' ? { createdAt: daysAgo(Math.max(20, -e + 5)), completedAt: daysAgo(Math.max(1, -e - 1)) } : {}),
       },
     })
   }
@@ -267,6 +272,12 @@ async function main() {
     ['UrbanCart', 'E-commerce', 'https://urbancart.example', 'Chattogram'],
     ['Skyline Properties', 'Real Estate', 'https://skyline.example', 'Uttara, Dhaka'],
     ['FinPro Analytics', 'Financial Technology', 'https://finpro.example', 'Motijheel, Dhaka'],
+    // L37-db fix: add missing companies referenced by deals (were incorrectly using 'GreenGrocer')
+    ['Rivendell Interiors', 'Interior Design', 'https://rivendell.example', 'Gulshan, Dhaka'],
+    ['Metro Foods', 'Food & Beverage', 'https://metrofoods.example', 'Mohakhali, Dhaka'],
+    ['Lumen Education', 'Education', 'https://lumenedu.example', 'Mirpur, Dhaka'],
+    ['Apex Healthcare', 'Healthcare', 'https://apexhealth.example', 'Bashundhara, Dhaka'],
+    ['Bengal Logistics', 'Logistics', 'https://bengallogistics.example', 'Chattogram'],
   ] as const
   for (const [name, industry, website, address] of companyDefs) {
     const c = await db.company.create({ data: { orgId: meridian.id, name, industry, website, address } })
@@ -330,8 +341,9 @@ async function main() {
     const [name, company, email, phone, source, status, value, , notes] = leadDefs[i]
     const lead = await db.lead.create({
       data: {
-        orgId: meridian.id, name, company, email, phone, source, status, value: value || null,
+        orgId: meridian.id, name, company, email, phone, source, status, value: C(value) as number | null, // MA-3 fix: convert to cents (was taka)
         notes, industry: null, ownerMembershipId: leadOwners[i % leadOwners.length], createdAt: daysAgo(20 - i),
+        convertedCompanyId: status === 'CONVERTED' ? companyIds[company] : null,
       },
     })
     leads[i] = { id: lead.id, name }
@@ -347,24 +359,24 @@ async function main() {
     ['UrbanCart Mobile App', 'UrbanCart', 'Shahriar Alam', 600000, 55, 'Proposal', 'OPEN', 'arif@orgos.dev', -12, 14],
     ['FinPro Analytics Dashboard', 'FinPro Analytics', 'Priya Das', 900000, 35, 'Qualified', 'OPEN', 'owner@orgos.dev', -8, 40],
     ['Skyline Corporate Website', 'Skyline Properties', 'Mahmud Hasan', 350000, 25, 'Meeting', 'OPEN', 'arif@orgos.dev', -6, 30],
-    ['Rivendell CRM Implementation', 'GreenGrocer', 'Ahsan Habib', 400000, 15, 'New', 'OPEN', 'zahin@orgos.dev', -4, 60],
-    ['Metro Foods Ordering App', 'GreenGrocer', null, 550000, 60, 'Negotiation', 'OPEN', 'arif@orgos.dev', -10, 7],
+    ['Rivendell CRM Implementation', 'Rivendell Interiors', 'Ahsan Habib', 400000, 15, 'New', 'OPEN', 'zahin@orgos.dev', -4, 60], // L37-db fix: was 'GreenGrocer'
+    ['Metro Foods Ordering App', 'Metro Foods', null, 550000, 60, 'Negotiation', 'OPEN', 'arif@orgos.dev', -10, 7], // L37-db fix: was 'GreenGrocer'
     ['TechNova Staff Augmentation', 'UrbanCart', null, 300000, 30, 'Proposal', 'OPEN', 'zahin@orgos.dev', -3, 21],
-    ['Lumen School Portal', 'GreenGrocer', null, 350000, 20, 'Qualified', 'OPEN', 'zahin@orgos.dev', -2, 45],
-    ['Apex Healthcare Booking Platform', 'GreenGrocer', null, 600000, 10, 'New', 'OPEN', 'arif@orgos.dev', -1, 50],
-    ['Bengal Logistics Fleet Portal', 'GreenGrocer', null, 280000, 0, 'Qualified', 'LOST', 'arif@orgos.dev', -40, -22],
+    ['Lumen School Portal', 'Lumen Education', null, 350000, 20, 'Qualified', 'OPEN', 'zahin@orgos.dev', -2, 45], // L37-db fix: was 'GreenGrocer'
+    ['Apex Healthcare Booking Platform', 'Apex Healthcare', null, 600000, 10, 'New', 'OPEN', 'arif@orgos.dev', -1, 50], // L37-db fix: was 'GreenGrocer'
+    ['Bengal Logistics Fleet Portal', 'Bengal Logistics', null, 280000, 0, 'Qualified', 'LOST', 'arif@orgos.dev', -40, -22], // L37-db fix: was 'GreenGrocer'
   ]
   const dealRecords: Array<{ id: string; name: string; status: string; stageId: string }> = []
   for (const [name, company, contact, value, probability, stage, status, owner, createdAgo, closeIn] of dealDefs) {
     const d = await db.deal.create({
       data: {
-        orgId: meridian.id, name, value, companyId: companyIds[company],
+        orgId: meridian.id, name, value: C(value) as number, companyId: companyIds[company],
         contactId: contact ? contactIds[contact] : null,
         stageId: stageIds[stage], probability, status,
         ownerMembershipId: member[owner],
         expectedCloseDate: status === 'WON' ? daysAgo(-closeIn) : daysAhead(closeIn),
         wonAt: status === 'WON' ? daysAgo(-closeIn) : null,
-        clientId: status === 'WON' ? (clientIds['GreenGrocer'] === null ? null : null) : null,
+        clientId: status === 'WON' ? (clientIds[company] ?? null) : null,
         notes: status === 'LOST' ? 'Chose a cheaper local vendor.' : null,
         createdAt: daysAgo(-createdAgo),
       },
@@ -384,7 +396,7 @@ async function main() {
   for (const [name, code, status, priority, budget, startAgo, endIn, progress, client, manager, description] of projectDefs) {
     const p = await db.project.create({
       data: {
-        orgId: meridian.id, name, code, status, priority, budget,
+        orgId: meridian.id, name, code, status, priority, budget: C(budget) as number,
         startDate: daysAgo(-startAgo), endDate: endIn < 0 ? daysAgo(-endIn) : daysAhead(endIn),
         progress, description, managerMembershipId: member[manager],
         clientId: client ? clientIds[client] : null, color: '#10b981',
@@ -504,7 +516,7 @@ async function main() {
         creatorMembershipId: proj ? member['farhan@orgos.dev'] : member['maria@orgos.dev'],
         status, priority, startDate: start, dueDate: due,
         estimatedHours: est, tags, order: 0,
-        completedAt: status === 'DONE' ? daysAgo(Math.max(0, -dueIn - 1) || 1) : null,
+        ...(status === 'DONE' ? { createdAt: daysAgo(Math.max(20, -dueIn + 5)), completedAt: daysAgo(Math.max(1, -dueIn - 1)) } : {}),
       },
     })
     taskIds[title] = t.id
@@ -520,12 +532,14 @@ async function main() {
     ['Reconciliation cron job', 'Integrate bKash payment gateway', 'meher@orgos.dev', 'TODO'],
   ]
   for (const [title, parent, assignee, status] of subtaskDefs) {
+    const dueIn = 4
     await db.task.create({
       data: {
         orgId: meridian.id, projectId: projectIds['GreenGrocer E-commerce Platform'],
         parentTaskId: taskIds[parent], title, status,
         assigneeMembershipId: member[assignee], creatorMembershipId: member['farhan@orgos.dev'],
-        priority: 'MEDIUM', dueDate: daysAhead(4),
+        priority: 'MEDIUM', dueDate: daysAhead(dueIn),
+        ...(status === 'DONE' ? { createdAt: daysAgo(Math.max(20, -dueIn + 5)), completedAt: daysAgo(Math.max(1, -dueIn - 1)) } : {}),
       },
     })
   }
@@ -549,7 +563,7 @@ async function main() {
   ]
   for (const [task, email, body, ago] of commentDefs) {
     await db.comment.create({
-      data: { orgId: meridian.id, entityType: 'TASK', entityId: taskIds[task], authorMembershipId: member[email], body, createdAt: daysAgo(-ago) },
+      data: { orgId: meridian.id, entityType: 'TASK', entityId: taskIds[task], taskId: taskIds[task], authorMembershipId: member[email], body, createdAt: daysAgo(-ago) },
     })
   }
 
@@ -577,7 +591,7 @@ async function main() {
     const j = await db.job.create({
       data: {
         orgId: meridian.id, title, departmentId: depts[dept], status, visibility, workMode,
-        experienceLevel: level, salaryMin: smin, salaryMax: smax, openings,
+        experienceLevel: level, salaryMin: C(smin) as number, salaryMax: C(smax) as number, openings,
         hiringManagerMembershipId: member[mgr as string] ?? null,
         deadline: daysAhead(deadlineIn), description: desc, responsibilities: resp, requirements: req,
         skills: 'Communication, Ownership, Craft', location: 'Dhaka, Bangladesh', employmentType: title.includes('Intern') ? 'INTERN' : 'FULL_TIME',
@@ -679,7 +693,8 @@ async function main() {
   }
 
   // ============== INVOICES ==============
-  const invoiceItems = (rows: Array<[string, number, number]>) => JSON.stringify(rows.map(([description, qty, rate]) => ({ description, qty, rate })))
+  // C7 fix: store rate in cents (was taka — 100x too small after the Float→Int migration)
+  const invoiceItems = (rows: Array<[string, number, number]>) => JSON.stringify(rows.map(([description, qty, rate]) => ({ description, qty, rate: C(rate) as number })))
   const invDefs: Array<[string, string, string, number, number, string, string]> = [
     // number, client, status, subtotal, dueIn, itemsKey, paidAgo
     ['MER-INV-2025-001', 'GreenGrocer', 'PAID', 425000, -40, 'gg1', -45],
@@ -713,9 +728,9 @@ async function main() {
     await db.invoice.create({
       data: {
         orgId: meridian.id, clientId: clientIds[client], number, status,
-        items: invoiceItems(itemSets[itemsKey]), subtotal, taxRate, taxAmount, discount: 0,
-        total: subtotal + taxAmount,
-        issueDate: dueIn < -5 ? daysAgo(-dueIn - 5) : daysAgo(5),
+        items: invoiceItems(itemSets[itemsKey]), subtotal: C(subtotal) as number, taxRate, taxAmount: C(taxAmount) as number, discount: 0,
+        total: C(subtotal + taxAmount) as number,
+        issueDate: daysAgo(-dueIn + 30),
         dueDate: dueIn < 0 ? daysAgo(-dueIn) : daysAhead(dueIn),
         paidAt: paidAgo ? daysAgo(-Number(paidAgo)) : null,
         projectId: client === 'GreenGrocer' ? projectIds['GreenGrocer E-commerce Platform'] : client === 'EduPath' ? projectIds['EduPath Learning Platform'] : null,
@@ -742,7 +757,7 @@ async function main() {
   for (const [title, category, email, proj, amount, ago, status, approver, notes] of expDefs) {
     await db.expense.create({
       data: {
-        orgId: meridian.id, membershipId: member[email], title, category, amount,
+        orgId: meridian.id, membershipId: member[email], title, category, amount: C(amount) as number,
         projectId: proj ? projectIds[proj] : null, date: daysAgo(-ago), status,
         notes, approvedById: approver ? member[approver] : null, createdAt: daysAgo(-ago),
       },
@@ -832,13 +847,17 @@ async function main() {
     ['Meridian leadership review', '', 2, 4, 'Monthly business review: pipeline, utilization, hiring.'],
   ]
   for (const [title, proj, inDays, hour, agenda] of meetDefs) {
-    await db.meeting.create({
+    // H12-db fix: participants stored via MeetingParticipant join table (was CSV string)
+    const participantIds = [member['farhan@orgos.dev'], member['maria@orgos.dev']]
+    const mtg = await db.meeting.create({
       data: {
         orgId: meridian.id, title, projectId: proj ? projectIds[proj] : null,
         startsAt: daysAhead(inDays, hour), agenda, durationMins: 45,
         createdByMembershipId: member['maria@orgos.dev'],
-        participants: [member['farhan@orgos.dev'], member['maria@orgos.dev']].join(','),
       },
+    })
+    await db.meetingParticipant.createMany({
+      data: participantIds.map((pid) => ({ meetingId: mtg.id, membershipId: pid })),
     })
   }
 
@@ -949,7 +968,7 @@ async function main() {
       latePenaltyMode: 'HALF_DAY',
     },
   })
-  await db.orgPolicy.create({ data: { orgId: northwind.id, latePenaltyEnabled: true, latePenaltyMode: 'AMOUNT', latePenaltyAmount: 300 } })
+  await db.orgPolicy.create({ data: { orgId: northwind.id, latePenaltyEnabled: true, latePenaltyMode: 'AMOUNT', latePenaltyAmount: C(300) as number } })
 
   // ============== T5: HOLIDAY CALENDAR (both orgs) ==============
   // Bangladesh public holidays 2026 (template) + one company closure per org.
@@ -1033,7 +1052,7 @@ async function main() {
     'tania@orgos.dev': 45000, 'zahin@orgos.dev': 35000, 'lubna@orgos.dev': 35000,
   }
   for (const [email, baseSalary] of Object.entries(baseSalaries)) {
-    await db.membership.update({ where: { id: member[email] }, data: { baseSalary } })
+    await db.membership.update({ where: { id: member[email] }, data: { baseSalary: C(baseSalary) as number } })
   }
 
   // ============== T3: SALARY COMPONENTS ==============
@@ -1054,7 +1073,7 @@ async function main() {
     ['arif@orgos.dev', 'Tax withholding', 'DEDUCTION', 12000],
   ]
   for (const [email, label, kind, amount] of componentDefs) {
-    await db.salaryComponent.create({ data: { orgId: meridian.id, membershipId: member[email], label, kind, amount } })
+    await db.salaryComponent.create({ data: { orgId: meridian.id, membershipId: member[email], label, kind, amount: C(amount) as number } })
   }
 
   // ============== T3: PREVIOUS-MONTH ATTENDANCE (payroll demo period) ==============
@@ -1150,6 +1169,8 @@ async function main() {
     const unpaidLeaveAmount = Math.round((base / 30) * unpaidLeaveDays)
     const gross = base + allowances
     const net = gross - fixedDeductions - unpaidLeaveAmount
+    // C7 fix: base/allowances/deductions are already in cents (read from DB which stores cents).
+    // No conversion needed — just write directly.
     const breakdown = JSON.stringify([
       { label: 'Base salary', kind: 'BASE', amount: base },
       ...m.salaryComponents.map((c) => ({ label: c.label, kind: c.kind, amount: c.amount })),
@@ -1271,7 +1292,7 @@ async function main() {
   const planByCode: Record<string, { id: string; priceMonthly: number; seatLimit: number }> = {}
   for (const [code, name, description, priceMonthly, priceYearly, seatLimit, projectLimit, storageGb, sortOrder, features] of planDefs) {
     const p = await db.plan.create({
-      data: { code, name, description, priceMonthly, priceYearly, seatLimit, projectLimit, storageGb, sortOrder, features: JSON.stringify(features) },
+      data: { code, name, description, priceMonthly: C(priceMonthly) as number, priceYearly: C(priceYearly) as number, seatLimit, projectLimit, storageGb, sortOrder, features: JSON.stringify(features) },
     })
     planByCode[code] = p
   }

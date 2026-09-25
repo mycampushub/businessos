@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useData, api } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import {
@@ -37,7 +37,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import {
-  Banknote, CalendarDays, CheckCircle2, Clock, MoreHorizontal, Plus, Receipt, Trash2, Wallet, XCircle,
+  Banknote, CalendarDays, CheckCircle2, Clock, MoreHorizontal, Pencil, Plus, Receipt, Trash2, Wallet, XCircle,
 } from 'lucide-react'
 
 // ---------- local types ----------
@@ -45,6 +45,7 @@ import {
 interface ExpenseItem {
   id: string
   membershipId: string
+  projectId: string | null
   userName: string | null
   projectName: string | null
   title: string
@@ -90,19 +91,61 @@ export default function FinanceExpensesView() {
   const canDeleteAny = role === 'OWNER' || role === 'ADMIN'
 
   const [tab, setTab] = useState<'all' | 'mine'>('all')
+  // H6-fe: paginated "Load more" pattern. The tab ('all' vs 'mine') is part
+  // of the path so switching tabs resets the accumulated list — the
+  // appendEffect's offset===0 branch handles the replacement.
+  const PAGE_SIZE = 25
+  const [offset, setOffset] = useState(0)
+  const [items, setItems] = useState<ExpenseItem[]>([])
+  const [hasMore, setHasMore] = useState(true)
   const { data, loading, error, refresh } = useData<{ items: ExpenseItem[] }>(
-    `/api/finance/expenses${tab === 'mine' ? '?mine=true' : ''}`
+    `/api/finance/expenses?limit=${PAGE_SIZE}&offset=${offset}${tab === 'mine' ? '&mine=true' : ''}`
   )
+
+  // Append (or replace on offset=0) whenever a fresh page arrives. Dedupe
+  // by id. Only depends on `data` (not `offset`) — see the parallel note in
+  // my-tasks-view.
+  useEffect(() => {
+    if (!data) return
+    setItems((prev) => {
+      if (offset === 0) return data.items
+      const seen = new Set(prev.map((e) => e.id))
+      return [...prev, ...data.items.filter((e) => !seen.has(e.id))]
+    })
+    setHasMore(data.items.length >= PAGE_SIZE)
+  }, [data])
+
+  function loadMore() {
+    setOffset((o) => o + PAGE_SIZE)
+  }
+
+  // Reset pagination when switching tabs so we don't carry the previous tab's
+  // accumulated items into the new tab.
+  useEffect(() => {
+    setOffset(0)
+    setItems([])
+    setHasMore(true)
+  }, [tab])
+
+  function refreshAll() {
+    if (offset === 0) {
+      refresh()
+    } else {
+      setOffset(0)
+    }
+  }
+
   const summaryQ = useData<SummaryShape>('/api/finance/summary')
-  const items = data?.items ?? []
 
   // this month spend (summary monthly's last bucket is the current month)
   const thisMonth = summaryQ.data?.monthly?.at(-1)?.month === todayStr().slice(0, 7)
     ? (summaryQ.data.monthly.at(-1)?.expenses ?? 0)
     : 0
 
-  // submit dialog
+  // submit / edit dialog (one shared form, mode-driven submit)
   const [formOpen, setFormOpen] = useState(false)
+  const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
+  const [editingId, setEditingId] = useState<string | null>(null)
   const projectsQ = useData<{ items: ProjectLite[] }>(formOpen ? '/api/projects' : null)
   const [form, setForm] = useState<ExpenseForm>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
@@ -113,7 +156,8 @@ export default function FinanceExpensesView() {
   const [busyId, setBusyId] = useState<string | null>(null)
 
   /** which actions the current user may take on a given expense */
-  function actionsFor(e: ExpenseItem): { approve: boolean; pay: boolean; reject: boolean; del: boolean } {
+  function actionsFor(e: ExpenseItem): { approve: boolean; pay: boolean; reject: boolean; del: boolean; edit: boolean } {
+    const canEdit = e.status === 'SUBMITTED' && (e.membershipId === membership?.id || canDeleteAny)
     return {
       approve:
         (e.status === 'SUBMITTED' && isSubmitApprover) ||
@@ -121,15 +165,33 @@ export default function FinanceExpensesView() {
       pay: isFinance && e.status === 'FINANCE_APPROVED',
       reject: isReviewer && REJECTABLE.includes(e.status),
       del: e.membershipId === membership?.id || canDeleteAny,
+      edit: canEdit,
     }
   }
 
   function openSubmit() {
+    setFormMode('create')
+    setEditingId(null)
     setForm({ ...EMPTY_FORM, date: todayStr() })
     setFormOpen(true)
   }
 
-  async function submitExpense() {
+  /** Pre-fill the shared form with an existing SUBMITTED expense and switch to edit mode. */
+  function openEdit(e: ExpenseItem) {
+    setFormMode('edit')
+    setEditingId(e.id)
+    setForm({
+      title: e.title,
+      category: EXPENSE_CATEGORIES.includes(e.category as (typeof EXPENSE_CATEGORIES)[number]) ? e.category : 'GENERAL',
+      amount: String(e.amount),
+      date: e.date.slice(0, 10),
+      projectId: e.projectId ?? '',
+      notes: e.notes ?? '',
+    })
+    setFormOpen(true)
+  }
+
+  async function submitExpenseForm() {
     if (!form.title.trim()) {
       toast({ title: 'Title is required', description: 'Describe the expense.', variant: 'destructive' })
       return
@@ -141,20 +203,27 @@ export default function FinanceExpensesView() {
     }
     setSaving(true)
     try {
-      await api('/api/finance/expenses', {
-        method: 'POST',
-        body: {
-          title: form.title,
-          category: form.category,
-          amount,
-          date: form.date || undefined,
-          projectId: form.projectId || undefined,
-          notes: form.notes,
-        },
-      })
-      toast({ title: 'Expense submitted', description: `"${form.title}" is awaiting approval.` })
+      const payload = {
+        title: form.title,
+        category: form.category,
+        amount,
+        date: form.date || undefined,
+        projectId: form.projectId || undefined,
+        notes: form.notes,
+      }
+      if (formMode === 'edit' && editingId) {
+        // PATCH with editable fields — projectId is intentionally omitted (not in the
+        // editable set per the spec); title/amount/category/date/notes are sent.
+        const { projectId: _omit, ...editable } = payload
+        void _omit
+        await api(`/api/finance/expenses/${editingId}`, { method: 'PATCH', body: editable })
+        toast({ title: 'Expense updated', description: `"${form.title}" saved.` })
+      } else {
+        await api('/api/finance/expenses', { method: 'POST', body: payload })
+        toast({ title: 'Expense submitted', description: `"${form.title}" is awaiting approval.` })
+      }
       setFormOpen(false)
-      refresh()
+      refreshAll()
       summaryQ.refresh()
     } catch {
     } finally {
@@ -178,7 +247,7 @@ export default function FinanceExpensesView() {
         pay: `${money(expense.amount, cur)} paid out for "${expense.title}".`,
       }
       toast({ title: titles[action], description: descs[action] })
-      refresh()
+      refreshAll()
       summaryQ.refresh()
     } catch {
     } finally {
@@ -193,7 +262,7 @@ export default function FinanceExpensesView() {
     try {
       await api(`/api/finance/expenses/${expense.id}`, { method: 'DELETE' })
       toast({ title: 'Expense deleted', description: `"${expense.title}" was removed.` })
-      refresh()
+      refreshAll()
       summaryQ.refresh()
     } catch {
     }
@@ -241,7 +310,7 @@ export default function FinanceExpensesView() {
 
         {(['all', 'mine'] as const).map((t) => (
           <TabsContent key={t} value={t} className="mt-4">
-            {loading ? (
+            {loading && items.length === 0 ? (
               <Card className="py-0">
                 <CardContent className="flex flex-col gap-3 p-4">
                   {Array.from({ length: 6 }).map((_, i) => (
@@ -254,7 +323,7 @@ export default function FinanceExpensesView() {
                   ))}
                 </CardContent>
               </Card>
-            ) : error ? (
+            ) : error && items.length === 0 ? (
               <EmptyState icon={Receipt} title="Couldn't load expenses" description={error} />
             ) : items.length === 0 ? (
               <EmptyState
@@ -268,7 +337,7 @@ export default function FinanceExpensesView() {
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
-                      <TableRow>
+                      <TableRow className="sticky top-0 z-10 bg-background">
                         <TableHead className="min-w-40">Employee</TableHead>
                         <TableHead className="min-w-48">Expense</TableHead>
                         <TableHead className="min-w-32">Category</TableHead>
@@ -282,7 +351,7 @@ export default function FinanceExpensesView() {
                     <TableBody>
                       {items.map((e) => {
                         const acts = actionsFor(e)
-                        const hasAny = acts.approve || acts.pay || acts.reject || acts.del
+                        const hasAny = acts.approve || acts.pay || acts.reject || acts.del || acts.edit
                         return (
                           <TableRow key={e.id} className={busyId === e.id ? 'opacity-50' : undefined}>
                             <TableCell>
@@ -335,7 +404,7 @@ export default function FinanceExpensesView() {
                                       <Banknote className="size-3.5" aria-hidden /> Pay
                                     </Button>
                                   )}
-                                  {(acts.reject || acts.del) && (
+                                  {(acts.reject || acts.del || acts.edit) && (
                                     <DropdownMenu>
                                       <DropdownMenuTrigger asChild>
                                         <Button variant="ghost" size="icon" className="size-8" aria-label={`More actions for ${e.title}`}>
@@ -343,6 +412,12 @@ export default function FinanceExpensesView() {
                                         </Button>
                                       </DropdownMenuTrigger>
                                       <DropdownMenuContent align="end">
+                                        {acts.edit && (
+                                          <DropdownMenuItem onClick={() => openEdit(e)}>
+                                            <Pencil className="size-4" aria-hidden /> Edit
+                                          </DropdownMenuItem>
+                                        )}
+                                        {acts.edit && (acts.reject || acts.del) && <DropdownMenuSeparator />}
                                         {acts.reject && (
                                           <DropdownMenuItem variant="destructive" onClick={() => setConfirming({ action: 'reject', expense: e })}>
                                             <XCircle className="size-4" aria-hidden /> Reject
@@ -366,8 +441,16 @@ export default function FinanceExpensesView() {
                     </TableBody>
                   </Table>
                 </div>
-                <div className="border-t px-4 py-2.5 text-xs text-muted-foreground">
-                  {items.length} expense{items.length === 1 ? '' : 's'} {t === 'mine' ? 'submitted by you' : 'across the org'}
+                <div className="flex flex-col gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                  <span>
+                    {items.length} expense{items.length === 1 ? '' : 's'} {t === 'mine' ? 'submitted by you' : 'across the org'}
+                    {hasMore && ' · more available below'}
+                  </span>
+                  {(hasMore || loading) && (
+                    <Button variant="outline" size="sm" className="h-9" onClick={loadMore} disabled={loading}>
+                      {loading ? 'Loading…' : 'Load more'}
+                    </Button>
+                  )}
                 </div>
               </Card>
             )}
@@ -375,12 +458,16 @@ export default function FinanceExpensesView() {
         ))}
       </Tabs>
 
-      {/* ---------- submit dialog ---------- */}
+      {/* ---------- submit / edit dialog ---------- */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Submit expense</DialogTitle>
-            <DialogDescription>Claims go to your manager for approval before finance pays out.</DialogDescription>
+            <DialogTitle>{formMode === 'edit' ? 'Edit expense' : 'Submit expense'}</DialogTitle>
+            <DialogDescription>
+              {formMode === 'edit'
+                ? 'Update your submitted claim — the project link cannot be changed after submission.'
+                : 'Claims go to your manager for approval before finance pays out.'}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
@@ -413,7 +500,7 @@ export default function FinanceExpensesView() {
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="exp-project">Project (optional)</Label>
-                <Select value={form.projectId} onValueChange={(v) => setForm((f) => ({ ...f, projectId: v === '__none' ? '' : v }))}>
+                <Select value={form.projectId} onValueChange={(v) => setForm((f) => ({ ...f, projectId: v === '__none' ? '' : v }))} disabled={formMode === 'edit'}>
                   <SelectTrigger id="exp-project" className="w-full"><SelectValue placeholder="Select project" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none">No project</SelectItem>
@@ -431,7 +518,11 @@ export default function FinanceExpensesView() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>
-            <Button onClick={() => void submitExpense()} disabled={saving}>{saving ? 'Submitting…' : 'Submit expense'}</Button>
+            <Button onClick={() => void submitExpenseForm()} disabled={saving}>
+              {saving
+                ? formMode === 'edit' ? 'Saving…' : 'Submitting…'
+                : formMode === 'edit' ? 'Save changes' : 'Submit expense'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

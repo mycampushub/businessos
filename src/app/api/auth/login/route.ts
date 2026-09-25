@@ -47,6 +47,10 @@ export async function POST(req: NextRequest) {
 
     const token = await createSession(user.id)
     await setSessionCookie(token)
+    // M11-auth fix: kill every OTHER session for this user on a fresh login so a
+    // stolen-credential login invalidates the legitimate user's prior devices
+    // (and vice versa) — "log out other devices" semantics on each login.
+    await db.session.deleteMany({ where: { userId: user.id, NOT: { id: token } } }).catch(() => {})
 
     // Resolve AFTER the session cookie is set so the fresh session is visible.
     return ok(await getSessionUser())

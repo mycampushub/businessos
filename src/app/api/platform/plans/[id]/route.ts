@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, body, str, num } from '@/lib/server/api'
 import { requirePlatform, platformAudit } from '../../guard'
 import { planItem, planSubscriptionCounts, encodeFeatures } from '@/lib/server/billing'
+import { toCents } from '@/lib/server/money'
 
 type RouteParams = { params: Promise<{ id: string }> }
 
@@ -30,8 +31,9 @@ export async function PATCH(req: NextRequest, route: RouteParams) {
     if (data.description !== undefined) {
       updates.description = data.description ? str(data.description, 'description', { required: false, max: 200 }) : null
     }
-    if (data.priceMonthly !== undefined) updates.priceMonthly = num(data.priceMonthly, 'priceMonthly', { min: 0 })
-    if (data.priceYearly !== undefined) updates.priceYearly = num(data.priceYearly, 'priceYearly', { min: 0 })
+    // C7: client sends dollars, DB stores cents
+    if (data.priceMonthly !== undefined) updates.priceMonthly = toCents(num(data.priceMonthly, 'priceMonthly', { min: 0 })) ?? 0
+    if (data.priceYearly !== undefined) updates.priceYearly = toCents(num(data.priceYearly, 'priceYearly', { min: 0 })) ?? 0
     if (data.seatLimit !== undefined) updates.seatLimit = num(data.seatLimit, 'seatLimit', { min: 1, max: 100000 })
     if (data.projectLimit !== undefined) updates.projectLimit = num(data.projectLimit, 'projectLimit', { min: 1, max: 100000 })
     if (data.storageGb !== undefined) updates.storageGb = num(data.storageGb, 'storageGb', { min: 1, max: 100000 })

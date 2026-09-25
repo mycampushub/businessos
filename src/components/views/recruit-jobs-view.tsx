@@ -25,6 +25,8 @@ import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { money, dueLabel, fmtDate, relativeTime, csv, APPLICATION_STAGE_LABELS, APPLICATION_STAGE_TONE, EMPLOYMENT_TYPES, EMPLOYMENT_TYPE_LABELS, WORK_MODES, WORK_MODE_LABELS } from '@/lib/format'
 import { Briefcase, BriefcaseBusiness, CalendarClock, CircleAlert, Coins, Eye, Globe2, MapPin, MoreHorizontal, PauseCircle, PencilLine, Plus, Search, Send, Star, Trash2, UserRoundSearch, UsersRound } from 'lucide-react'
+import { jobSchema } from '@/lib/validations'
+import { useFormErrors } from '@/lib/client/use-form-errors'
 
 // ---------- local types ----------
 
@@ -613,6 +615,7 @@ function JobFormDialog({
 }) {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const { errors, validate, clearError, clearAll } = useFormErrors()
   const [form, setForm] = useState({
     title: '',
     departmentId: NONE,
@@ -649,13 +652,26 @@ function JobFormDialog({
       openings: String(editing?.openings ?? 1),
       visibility: editing?.visibility ?? 'PUBLIC',
     })
+    clearAll()
   }
 
   function set<K extends keyof typeof form>(key: K, value: string) {
     setForm((f) => ({ ...f, [key]: value }))
+    clearError(key)
   }
 
   async function save() {
+    // M14-fe: zod validation layer. The schema validates only the fields
+    // declared on it (title, description, employmentType, workMode,
+    // salaryMin/Max, openings, visibility, plus the optional
+    // departmentId / experienceLevel). The form's other free-text fields
+    // (responsibilities, requirements, skills, location, deadline) are
+    // not constrained beyond the API's own checks. Existing toast
+    // fallback for title/description is kept below as a safety net.
+    if (!validate(jobSchema, form)) {
+      toast({ title: 'Please fix the highlighted fields', variant: 'destructive' })
+      return
+    }
     if (!form.title.trim() || !form.description.trim()) {
       toast({ title: 'Missing details', description: 'Title and description are required.', variant: 'destructive' })
       return
@@ -706,12 +722,20 @@ function JobFormDialog({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-2 sm:col-span-2">
             <Label htmlFor="job-title">Title *</Label>
-            <Input id="job-title" value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Senior Product Designer" />
+            <Input
+              id="job-title"
+              value={form.title}
+              onChange={(e) => set('title', e.target.value)}
+              placeholder="e.g. Senior Product Designer"
+              aria-invalid={!!errors.title}
+              aria-describedby={errors.title ? 'job-title-error' : undefined}
+            />
+            {errors.title && <p id="job-title-error" className="text-xs text-destructive" role="alert">{errors.title}</p>}
           </div>
           <div className="flex flex-col gap-2">
-            <Label>Department</Label>
+            <Label htmlFor="job-department">Department</Label>
             <Select value={form.departmentId} onValueChange={(v) => set('departmentId', v)}>
-              <SelectTrigger className="w-full" aria-label="Job department"><SelectValue /></SelectTrigger>
+              <SelectTrigger id="job-department" className="w-full" aria-label="Job department"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={NONE}>No department</SelectItem>
                 {departments.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
@@ -724,7 +748,16 @@ function JobFormDialog({
           </div>
           <div className="flex flex-col gap-2 sm:col-span-2">
             <Label htmlFor="job-desc">Description *</Label>
-            <Textarea id="job-desc" value={form.description} onChange={(e) => set('description', e.target.value)} rows={3} placeholder="What the role is about…" />
+            <Textarea
+              id="job-desc"
+              value={form.description}
+              onChange={(e) => set('description', e.target.value)}
+              rows={3}
+              placeholder="What the role is about…"
+              aria-invalid={!!errors.description}
+              aria-describedby={errors.description ? 'job-desc-error' : undefined}
+            />
+            {errors.description && <p id="job-desc-error" className="text-xs text-destructive" role="alert">{errors.description}</p>}
           </div>
           <div className="flex flex-col gap-2 sm:col-span-2">
             <Label htmlFor="job-resp">Responsibilities</Label>
@@ -739,9 +772,9 @@ function JobFormDialog({
             <Input id="job-skills" value={form.skills} onChange={(e) => set('skills', e.target.value)} placeholder="React, TypeScript, SQL" />
           </div>
           <div className="flex flex-col gap-2">
-            <Label>Experience level</Label>
+            <Label htmlFor="job-experience">Experience level</Label>
             <Select value={form.experienceLevel} onValueChange={(v) => set('experienceLevel', v)}>
-              <SelectTrigger className="w-full" aria-label="Experience level"><SelectValue /></SelectTrigger>
+              <SelectTrigger id="job-experience" className="w-full" aria-label="Experience level"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={NONE}>Any level</SelectItem>
                 {EXPERIENCE_LEVELS.map((l) => <SelectItem key={l} value={l}>{EXPERIENCE_LABELS[l]}</SelectItem>)}
@@ -749,47 +782,103 @@ function JobFormDialog({
             </Select>
           </div>
           <div className="flex flex-col gap-2">
-            <Label>Employment type</Label>
+            <Label htmlFor="job-employment">Employment type</Label>
             <Select value={form.employmentType} onValueChange={(v) => set('employmentType', v)}>
-              <SelectTrigger className="w-full" aria-label="Employment type"><SelectValue /></SelectTrigger>
+              <SelectTrigger
+                id="job-employment"
+                className="w-full"
+                aria-label="Employment type"
+                aria-invalid={!!errors.employmentType}
+                aria-describedby={errors.employmentType ? 'job-employment-error' : undefined}
+              >
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 {EMPLOYMENT_TYPES.map((t) => <SelectItem key={t} value={t}>{EMPLOYMENT_TYPE_LABELS[t]}</SelectItem>)}
               </SelectContent>
             </Select>
+            {errors.employmentType && <p id="job-employment-error" className="text-xs text-destructive" role="alert">{errors.employmentType}</p>}
           </div>
           <div className="flex flex-col gap-2">
-            <Label>Work mode</Label>
+            <Label htmlFor="job-workmode">Work mode</Label>
             <Select value={form.workMode} onValueChange={(v) => set('workMode', v)}>
-              <SelectTrigger className="w-full" aria-label="Work mode"><SelectValue /></SelectTrigger>
+              <SelectTrigger
+                id="job-workmode"
+                className="w-full"
+                aria-label="Work mode"
+                aria-invalid={!!errors.workMode}
+                aria-describedby={errors.workMode ? 'job-workmode-error' : undefined}
+              >
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 {WORK_MODES.map((w) => <SelectItem key={w} value={w}>{WORK_MODE_LABELS[w]}</SelectItem>)}
               </SelectContent>
             </Select>
+            {errors.workMode && <p id="job-workmode-error" className="text-xs text-destructive" role="alert">{errors.workMode}</p>}
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="job-openings">Openings</Label>
-            <Input id="job-openings" type="number" min={1} value={form.openings} onChange={(e) => set('openings', e.target.value)} />
+            <Input
+              id="job-openings"
+              type="number"
+              min={1}
+              value={form.openings}
+              onChange={(e) => set('openings', e.target.value)}
+              aria-invalid={!!errors.openings}
+              aria-describedby={errors.openings ? 'job-openings-error' : undefined}
+            />
+            {errors.openings && <p id="job-openings-error" className="text-xs text-destructive" role="alert">{errors.openings}</p>}
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="job-smin">Salary min (monthly)</Label>
-            <Input id="job-smin" type="number" min={0} value={form.salaryMin} onChange={(e) => set('salaryMin', e.target.value)} placeholder="e.g. 40000" />
+            <Input
+              id="job-smin"
+              type="number"
+              min={0}
+              value={form.salaryMin}
+              onChange={(e) => set('salaryMin', e.target.value)}
+              placeholder="e.g. 40000"
+              aria-invalid={!!errors.salaryMin}
+              aria-describedby={errors.salaryMin ? 'job-smin-error' : undefined}
+            />
+            {errors.salaryMin && <p id="job-smin-error" className="text-xs text-destructive" role="alert">{errors.salaryMin}</p>}
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="job-smax">Salary max (monthly)</Label>
-            <Input id="job-smax" type="number" min={0} value={form.salaryMax} onChange={(e) => set('salaryMax', e.target.value)} placeholder="e.g. 70000" />
+            <Input
+              id="job-smax"
+              type="number"
+              min={0}
+              value={form.salaryMax}
+              onChange={(e) => set('salaryMax', e.target.value)}
+              placeholder="e.g. 70000"
+              aria-invalid={!!errors.salaryMax}
+              aria-describedby={errors.salaryMax ? 'job-smax-error' : undefined}
+            />
+            {errors.salaryMax && <p id="job-smax-error" className="text-xs text-destructive" role="alert">{errors.salaryMax}</p>}
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="job-deadline">Application deadline</Label>
             <Input id="job-deadline" type="date" value={form.deadline} onChange={(e) => set('deadline', e.target.value)} />
           </div>
           <div className="flex flex-col gap-2">
-            <Label>Visibility</Label>
+            <Label htmlFor="job-visibility">Visibility</Label>
             <Select value={form.visibility} onValueChange={(v) => set('visibility', v)}>
-              <SelectTrigger className="w-full" aria-label="Visibility"><SelectValue /></SelectTrigger>
+              <SelectTrigger
+                id="job-visibility"
+                className="w-full"
+                aria-label="Visibility"
+                aria-invalid={!!errors.visibility}
+                aria-describedby={errors.visibility ? 'job-visibility-error' : undefined}
+              >
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 {VISIBILITIES.map((v) => <SelectItem key={v} value={v}>{VISIBILITY_LABELS[v]}</SelectItem>)}
               </SelectContent>
             </Select>
+            {errors.visibility && <p id="job-visibility-error" className="text-xs text-destructive" role="alert">{errors.visibility}</p>}
           </div>
         </div>
         <DialogFooter className="gap-2">

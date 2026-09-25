@@ -84,9 +84,9 @@ export async function PATCH(req: NextRequest, route: RouteParams) {
           },
           include: subInclude,
         })
-        // restore the denormalized display plan
-        if (org.plan !== sub.plan.name) {
-          await db.organization.update({ where: { id: org.id }, data: { plan: sub.plan.name } })
+        // H13-db fix: restore the denormalized plan — store Plan.code not Plan.name
+        if (org.plan !== sub.plan.code) {
+          await db.organization.update({ where: { id: org.id }, data: { plan: sub.plan.code } })
         }
         await notifyUsers({
           orgId: org.id,
@@ -179,9 +179,9 @@ export async function PATCH(req: NextRequest, route: RouteParams) {
 
     const updated = await db.subscription.update({ where: { id: sub.id }, data: updates, include: subInclude })
 
-    // keep the denormalized org display plan in sync
-    if (planChanged && org.plan !== effectivePlan.name) {
-      await db.organization.update({ where: { id: org.id }, data: { plan: effectivePlan.name } })
+    // H13-db fix: keep the denormalized org plan in sync — store Plan.code not Plan.name
+    if (planChanged && org.plan !== effectivePlan.code) {
+      await db.organization.update({ where: { id: org.id }, data: { plan: effectivePlan.code } })
     }
 
     if (planChanged || cycleChanged || data.seats !== undefined) {

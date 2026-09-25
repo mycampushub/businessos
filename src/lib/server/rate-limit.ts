@@ -62,12 +62,24 @@ export function resetRate(key: string) {
 
 // ---------- login key helpers ----------
 
-/** Client IP: first value of x-forwarded-for, falling back to 'local'. */
+/** Client IP: prefer cf-connecting-ip (unforgeable from client behind Cloudflare),
+ *  then the LAST value of x-forwarded-for (the proxy-set one), then x-real-ip, then 'local'.
+ *  H2 fix: previously used the FIRST value of x-forwarded-for, which is client-controllable
+ *  and could be spoofed to bypass rate limits. */
 export function clientIp(req: NextRequest): string {
+  // Cloudflare sets this header and strips any client-supplied version — unforgeable.
+  const cfIp = req.headers.get('cf-connecting-ip')
+  if (cfIp) return cfIp.trim()
+
+  const realIp = req.headers.get('x-real-ip')
+  if (realIp) return realIp.trim()
+
   const fwd = req.headers.get('x-forwarded-for')
   if (fwd) {
-    const first = fwd.split(',')[0]?.trim()
-    if (first) return first
+    // The LAST entry in x-forwarded-for is the one set by the trusted reverse proxy.
+    // Earlier entries may be client-supplied and spoofed.
+    const parts = fwd.split(',').map((s) => s.trim()).filter(Boolean)
+    if (parts.length) return parts[parts.length - 1]
   }
   return 'local'
 }

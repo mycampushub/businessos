@@ -3,13 +3,15 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, requireRole, body, str, num, optNum, optDate, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { INVOICE_ROLES } from '@/lib/roles'
+import { toCents, fromCents0 } from '@/lib/server/money'
 
 type InvoiceItem = { description: string; qty: number; rate: number }
 
 const invoiceInclude = { client: { select: { id: true, name: true } } }
 
-const money = (n: number) => `৳${Math.round(n).toLocaleString('en-US')}`
-const round2 = (n: number) => Math.round(n * 100) / 100
+// C7 fix: invoice money columns (subtotal/taxAmount/discount/total) are stored in
+// cents. `money` is used for log messages and must convert from cents → dollars.
+const money = (n: number) => `৳${Math.round(fromCents0(n)).toLocaleString('en-US')}`
 
 function parseItems(s: string): InvoiceItem[] {
   try {
@@ -20,12 +22,19 @@ function parseItems(s: string): InvoiceItem[] {
   }
 }
 
-function mapInvoice<T extends { items: string; client: { name: string } | null }>(inv: T) {
-  const { items, client, ...rest } = inv
+// C7 fix: convert every money field from cents → dollars on the way out. The items
+// JSON stores `rate` in cents, so map each line too. taxRate is a percentage and
+// is NOT money — it passes through unchanged.
+function mapInvoice<T extends { items: string; client: { name: string } | null; subtotal: number; taxAmount: number; discount: number; total: number }>(inv: T) {
+  const { items, client, subtotal, taxAmount, discount, total, ...rest } = inv
   return {
     ...rest,
-    items: parseItems(items),
+    items: parseItems(items).map((it) => ({ ...it, rate: fromCents0(it.rate) })),
     clientName: client?.name ?? null,
+    subtotal: fromCents0(subtotal),
+    taxAmount: fromCents0(taxAmount),
+    discount: fromCents0(discount),
+    total: fromCents0(total),
   }
 }
 
@@ -33,10 +42,18 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
     const { org } = requireOrg(ctx)
     const denied = requireAccess(ctx, 'finance-invoices', 'view')
     if (denied) return denied
+    // H6-fe: optional pagination — defaults to a single page of 50 so the
+    // invoices view can implement a "Load more" pattern. Callers that omit
+    // both params still get a sensible default instead of every record.
+    const url = new URL(req.url)
+    const limit = Math.max(1, Math.min(500, optNum(url.searchParams.get('limit')) ?? 50))
+    const offset = Math.max(0, optNum(url.searchParams.get('offset')) ?? 0)
     const invoices = await db.invoice.findMany({
       where: { orgId: org.id },
       orderBy: { issueDate: 'desc' },
       include: invoiceInclude,
+      take: limit,
+      skip: offset,
     })
     return ok({ items: invoices.map(mapInvoice) })
 })
@@ -65,23 +82,28 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
     if (!Array.isArray(b.items) || b.items.length < 1) {
       return fail('At least one line item is required', 422)
     }
+    // C7 fix: items[].rate arrives in dollars → convert to cents for DB storage
+    // (the items JSON stores rate in cents; mapInvoice converts back on read).
     const items: InvoiceItem[] = (b.items as unknown[]).map((raw) => {
       const it = raw as Record<string, unknown>
       return {
         description: str(it.description, 'items[].description', { max: 300 }),
         qty: num(it.qty, 'items[].qty', { required: false, min: 0 }),
-        rate: num(it.rate, 'items[].rate', { required: false, min: 0 }),
+        rate: toCents(num(it.rate, 'items[].rate', { required: false, min: 0 }))!,
       }
     })
 
     const dueDate = optDate(b.dueDate)
     if (!dueDate) return fail('Field "dueDate" is required', 422)
 
+    // C7 fix: taxRate is a percentage (0–100) and stays a float — NOT money.
+    // discount arrives in dollars → convert to cents. All derived totals are
+    // computed and stored in cents (integer).
     const taxRate = optNum(b.taxRate) ?? 0
-    const discount = optNum(b.discount) ?? 0
-    const subtotal = round2(items.reduce((s, i) => s + i.qty * i.rate, 0))
-    const taxAmount = round2((subtotal * taxRate) / 100)
-    const total = round2(subtotal + taxAmount - discount)
+    const discount = toCents(optNum(b.discount) ?? 0)!
+    const subtotal = items.reduce((s, i) => s + i.qty * i.rate, 0)
+    const taxAmount = Math.round((subtotal * taxRate) / 100)
+    const total = subtotal + taxAmount - discount
 
     let projectId: string | null = null
     if (typeof b.projectId === 'string' && b.projectId.trim()) {

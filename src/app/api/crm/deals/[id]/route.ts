@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, withAuth, requireOrg, body, str, num, optNum, optDate, oneOf, logActivity, notifyUsers, managerUserIds } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { dealInclude, decorateDeals, money, clampProb } from '../deal-helpers'
+import { toCents } from '@/lib/server/money'
 
 const DEAL_STATUSES = ['OPEN', 'WON', 'LOST'] as const
 
@@ -18,7 +19,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const b = await body(req)
 
     const name = b.name !== undefined ? str(b.name, 'name', { max: 200 }) : undefined
-    const value = b.value !== undefined ? num(b.value, 'value', { required: false, min: 0 }) : undefined
+    // C7: client sends dollars, DB stores cents. Deal.value is Int @default(0) (non-nullable) — coalesce null→0.
+    const value = b.value !== undefined ? (toCents(num(b.value, 'value', { required: false, min: 0 })) ?? 0) : undefined
     const probability =
       b.probability !== undefined ? clampProb(optNum(b.probability) ?? 20) : undefined
     const expectedCloseDate =

@@ -18,6 +18,8 @@ export function PasswordInput({
   invalid,
   disabled,
   id,
+  label = 'Password',
+  describedBy,
 }: {
   value: string
   onChange: (v: string) => void
@@ -26,6 +28,9 @@ export function PasswordInput({
   invalid?: boolean
   disabled?: boolean
   id?: string
+  label?: string
+  /** Optional extra aria-describedby id(s) — merged with the internal caps-lock warning id. */
+  describedBy?: string
 }) {
   const [visible, setVisible] = useState(false)
   const [capsOn, setCapsOn] = useState(false)
@@ -33,9 +38,15 @@ export function PasswordInput({
   const inputId = id ?? `pw-${fallbackId}`
   const warningId = `${inputId}-caps`
 
+  // Merge the internal caps-lock warning id with any caller-supplied describedBy
+  // (e.g. the form-level error banner) so both are announced by screen readers.
+  const describedByFull = [describedBy, capsOn ? warningId : undefined]
+    .filter(Boolean)
+    .join(' ') || undefined
+
   return (
     <div className="flex flex-col gap-2">
-      <Label htmlFor={inputId}>Password</Label>
+      <Label htmlFor={inputId}>{label}</Label>
       <div className="relative">
         <Lock
           className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -51,7 +62,7 @@ export function PasswordInput({
           onKeyUp={(e) => setCapsOn(e.getModifierState?.('CapsLock') ?? false)}
           onBlur={() => setCapsOn(false)}
           aria-invalid={invalid || undefined}
-          aria-describedby={capsOn ? warningId : undefined}
+          aria-describedby={describedByFull}
           disabled={disabled}
           required
           className={cn('h-11 pl-9 pr-11', invalid && 'border-destructive/60 focus-visible:ring-destructive/30')}

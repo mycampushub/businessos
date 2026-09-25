@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
         country: country || null,
         currency,
         description: description || null,
-        plan: 'Free',
+        plan: 'FREE', // MA-1 #7 fix: use UPPERCASE Plan.code (was Title Case 'Free')
         ownerId: ctx.user.id,
       },
     })

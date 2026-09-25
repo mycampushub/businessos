@@ -319,6 +319,26 @@ export default function CrmDealsView() {
     refresh()
   }
 
+  // H4-fe: surface API errors explicitly instead of falling through to the
+  // "No deals yet" empty state (which is misleading when the request failed).
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          icon={Handshake}
+          title="Deals"
+          description="Drag deals through the pipeline — winning one creates the client record."
+          actions={canManage ? (
+            <Button onClick={openCreate}>
+              <Plus className="size-4" aria-hidden /> New deal
+            </Button>
+          ) : undefined}
+        />
+        <EmptyState icon={Handshake} title="Couldn't load deals" description={error} />
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -341,8 +361,6 @@ export default function CrmDealsView() {
         <StatCard label="Won" value={stats.wonCount} icon={Trophy} tone="success" loading={loading} />
         <StatCard label="Won value" value={money(stats.wonValue, cur, true)} icon={Banknote} tone="success" loading={loading} />
       </div>
-
-      {error && <EmptyState icon={Handshake} title="Couldn't load deals" description={error} />}
 
       {/* ---------- pipeline board ---------- */}
       <section aria-label="Deal pipeline" className="flex flex-col gap-4">

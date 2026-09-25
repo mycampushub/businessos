@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, body, str, withAuth } from '@/lib/server/api'
+import { ok, fail, body, str, withAuth } from '@/lib/server/api'
 import type { Prisma } from '@prisma/client'
 
 /**
@@ -57,5 +57,39 @@ export async function PATCH(req: NextRequest) {
       data: { readAt: new Date() },
     })
     return ok({ updated: result.count })
+  })(req)
+}
+
+/** DELETE /api/notifications — dismiss notifications.
+ *  - ?id=<notificationId> — deletes a single notification (must belong to the user).
+ *  - ?all=true            — deletes ALL of the user's READ notifications (readAt is not null). */
+export async function DELETE(req: NextRequest) {
+  return withAuth(async (rq, ctx) => {
+    const sp = rq.nextUrl.searchParams
+    const all = sp.get('all') === 'true'
+    const singleId = sp.get('id')
+
+    if (all) {
+      // clear every read notification of the current user (unread ones are kept —
+      // dismissing those would silently drop un-viewed items)
+      const result = await db.notification.deleteMany({
+        where: { userId: ctx.user.id, readAt: { not: null } },
+      })
+      return ok({ deleted: result.count })
+    }
+
+    if (!singleId) {
+      return fail('Provide ?id=<notificationId> or ?all=true', 422)
+    }
+
+    // single delete — verify ownership before deleting
+    const owned = await db.notification.findFirst({
+      where: { id: singleId, userId: ctx.user.id },
+      select: { id: true },
+    })
+    if (!owned) return fail('Notification not found', 404)
+
+    await db.notification.delete({ where: { id: owned.id } })
+    return ok({ deleted: 1 })
   })(req)
 }

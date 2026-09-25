@@ -116,6 +116,9 @@ export default function HrLeaveView() {
   const [requestOpen, setRequestOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState('all')
   const [mineOnly, setMineOnly] = useState(false)
+  // H8-fe: track the in-flight leave request id so we can disable its action
+  // buttons until the PATCH resolves (prevents double-clicks → 409 toasts).
+  const [busyId, setBusyId] = useState<string | null>(null)
 
   const allItems = allData.data?.items ?? []
   const myItems = myData.data?.items ?? []
@@ -141,6 +144,9 @@ export default function HrLeaveView() {
   }, [allItems, statusFilter, mineOnly, membership])
 
   async function act(id: string, action: 'approve' | 'reject' | 'cancel') {
+    // H8-fe: guard against double-clicks while the PATCH is in flight.
+    if (busyId) return
+    setBusyId(id)
     try {
       await api(`/api/hr/leave/${id}`, { method: 'PATCH', body: { action } })
       toast({
@@ -151,6 +157,8 @@ export default function HrLeaveView() {
       myData.refresh()
     } catch {
       // api() toasts the error
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -186,7 +194,7 @@ export default function HrLeaveView() {
             <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-wrap items-center gap-3">
                 <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="w-[170px]" aria-label="Filter by status">
+                  <SelectTrigger className="w-full sm:w-[170px]" aria-label="Filter by status">
                     <SelectValue placeholder="Status" />
                   </SelectTrigger>
                   <SelectContent>
@@ -211,6 +219,7 @@ export default function HrLeaveView() {
             canApprove={canApprove}
             myMembershipId={membership?.id ?? null}
             onAction={act}
+            busyId={busyId}
           />
         </TabsContent>
 
@@ -232,6 +241,7 @@ export default function HrLeaveView() {
             canApprove={canApprove}
             myMembershipId={membership?.id ?? null}
             onAction={act}
+            busyId={busyId}
             myView
           />
         </TabsContent>
@@ -267,7 +277,7 @@ export default function HrLeaveView() {
 // ---------- shared table ----------
 
 function LeaveTable({
-  items, loading, error, canApprove, myMembershipId, onAction, myView = false,
+  items, loading, error, canApprove, myMembershipId, onAction, busyId, myView = false,
 }: {
   items: LeaveRequest[]
   loading: boolean
@@ -275,6 +285,8 @@ function LeaveTable({
   canApprove: boolean
   myMembershipId: string | null
   onAction: (id: string, action: 'approve' | 'reject' | 'cancel') => void
+  /** H8-fe: id of the request currently being mutated — its buttons stay disabled. */
+  busyId: string | null
   myView?: boolean
 }) {
   if (loading) {
@@ -352,17 +364,17 @@ function LeaveTable({
                       <div className="flex flex-wrap gap-2">
                         {canApprove && (
                           <>
-                            <Button size="sm" className="h-9 bg-emerald-600 text-white hover:bg-emerald-600/90" onClick={() => onAction(r.id, 'approve')}>
-                              <CheckCircle2 className="mr-1 size-3.5" aria-hidden /> Approve
+                            <Button size="sm" className="h-9 bg-emerald-600 text-white hover:bg-emerald-600/90" disabled={busyId === r.id} onClick={() => onAction(r.id, 'approve')}>
+                              <CheckCircle2 className="mr-1 size-3.5" aria-hidden /> {busyId === r.id ? '…' : 'Approve'}
                             </Button>
-                            <Button size="sm" variant="outline" className="h-9 border-destructive/40 text-destructive hover:bg-destructive/10" onClick={() => onAction(r.id, 'reject')}>
-                              <XCircle className="mr-1 size-3.5" aria-hidden /> Reject
+                            <Button size="sm" variant="outline" className="h-9 border-destructive/40 text-destructive hover:bg-destructive/10" disabled={busyId === r.id} onClick={() => onAction(r.id, 'reject')}>
+                              <XCircle className="mr-1 size-3.5" aria-hidden /> {busyId === r.id ? '…' : 'Reject'}
                             </Button>
                           </>
                         )}
                         {isMine && (
-                          <Button size="sm" variant="ghost" className="h-9" onClick={() => onAction(r.id, 'cancel')}>
-                            Cancel
+                          <Button size="sm" variant="ghost" className="h-9" disabled={busyId === r.id} onClick={() => onAction(r.id, 'cancel')}>
+                            {busyId === r.id ? '…' : 'Cancel'}
                           </Button>
                         )}
                       </div>

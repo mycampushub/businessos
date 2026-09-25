@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth, optNum } from '@/lib/server/api'
 import { requirePlatform } from '../guard'
+import { fromCents0 } from '@/lib/server/money'
 
 // Audit rows store JSON as strings — parse for the client, null-safe.
 function parseJson(v: string | null): unknown {
@@ -11,6 +12,26 @@ function parseJson(v: string | null): unknown {
   } catch {
     return v
   }
+}
+
+// MA-1 #11 fix: AuditLog oldValues/newValues store raw DB values (cents for money fields).
+// Convert known money fields from cents → taka for display. Keys are matched by name.
+const MONEY_KEYS = new Set([
+  'baseSalary', 'amount', 'value', 'budget', 'subtotal', 'taxAmount', 'discount', 'total',
+  'gross', 'net', 'allowances', 'deductions', 'unpaidLeaveAmount', 'priceMonthly', 'priceYearly',
+  'amountMonthly', 'latePenaltyAmount', 'salaryMin', 'salaryMax',
+])
+function convertMoneyFields(obj: unknown): unknown {
+  if (!obj || typeof obj !== 'object') return obj
+  const result: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (MONEY_KEYS.has(k) && typeof v === 'number') {
+      result[k] = fromCents0(v)
+    } else {
+      result[k] = v
+    }
+  }
+  return result
 }
 
 // GET /api/platform/audit?limit= — cross-org audit trail (limit 1..100, default 50)
@@ -39,8 +60,8 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
       actorName: r.actor?.user.name ?? null,
       orgId: r.orgId,
       orgName: r.org?.name ?? null,
-      oldValues: parseJson(r.oldValues),
-      newValues: parseJson(r.newValues),
+      oldValues: convertMoneyFields(parseJson(r.oldValues)),
+      newValues: convertMoneyFields(parseJson(r.newValues)),
     })),
   })
 })

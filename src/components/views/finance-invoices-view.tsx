@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useData, api } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import {
@@ -31,8 +31,10 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import {
-  AlertTriangle, Ban, CalendarDays, CheckCircle2, Clock, FileText, Plus, Receipt, Search, Send, Trash2, X,
+  AlertTriangle, Ban, CalendarDays, CheckCircle2, Clock, FileText, Pencil, Plus, Receipt, Search, Send, Trash2, X,
 } from 'lucide-react'
+import { invoiceSchema } from '@/lib/validations'
+import { useFormErrors } from '@/lib/client/use-form-errors'
 
 // ---------- local types ----------
 
@@ -104,8 +106,42 @@ export default function FinanceInvoicesView() {
   const cur = org?.currency ?? 'BDT'
   const canManage = role === 'OWNER' || role === 'ADMIN' || role === 'FINANCE'
 
-  const { data, loading, error, refresh } = useData<{ items: InvoiceItem[] }>('/api/finance/invoices')
-  const items = data?.items ?? []
+  // H6-fe: paginated "Load more" pattern — replace the old single-shot
+  // fetch (which returned every invoice at once) with offset pagination.
+  const PAGE_SIZE = 25
+  const [offset, setOffset] = useState(0)
+  const [items, setItems] = useState<InvoiceItem[]>([])
+  const [hasMore, setHasMore] = useState(true)
+  const { data, loading, error, refresh } = useData<{ items: InvoiceItem[] }>(
+    `/api/finance/invoices?limit=${PAGE_SIZE}&offset=${offset}`
+  )
+
+  // Append (or replace on offset=0) whenever a fresh page arrives. Dedupe
+  // by id so refresh can't sneak a duplicate in. Only depends on `data`
+  // (not `offset`) — see the parallel note in my-tasks-view.
+  useEffect(() => {
+    if (!data) return
+    setItems((prev) => {
+      if (offset === 0) return data.items
+      const seen = new Set(prev.map((i) => i.id))
+      return [...prev, ...data.items.filter((i) => !seen.has(i.id))]
+    })
+    setHasMore(data.items.length >= PAGE_SIZE)
+  }, [data])
+
+  function loadMore() {
+    setOffset((o) => o + PAGE_SIZE)
+  }
+
+  // Any refresh (create/edit/status change/delete) resets to page 1 so the
+  // entire accumulated list is re-fetched from scratch.
+  function refreshAll() {
+    if (offset === 0) {
+      refresh()
+    } else {
+      setOffset(0)
+    }
+  }
 
   // filters
   const [q, setQ] = useState('')
@@ -131,14 +167,17 @@ export default function FinanceInvoicesView() {
     return { paid, outstanding, overdue, draft, paidV: sum(paid), outV: sum(outstanding), odV: sum(overdue) }
   }, [items])
 
-  // create dialog
+  // create/edit dialog (one shared form, mode-driven submit)
   const [formOpen, setFormOpen] = useState(false)
+  const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
+  const [editingId, setEditingId] = useState<string | null>(null)
   const clientsQ = useData<{ items: ClientLite[] }>(formOpen ? '/api/crm/clients' : null)
   const [form, setForm] = useState<InvoiceForm>({
     clientId: '', number: '', issueDate: todayStr(), dueDate: plusDays(14),
     items: [{ description: '', qty: '1', rate: '' }], taxRate: '0', discount: '0', notes: '',
   })
   const [saving, setSaving] = useState(false)
+  const { errors, validate, clearError, clearAll } = useFormErrors()
 
   // detail dialog
   const [detail, setDetail] = useState<InvoiceItem | null>(null)
@@ -153,19 +192,55 @@ export default function FinanceInvoicesView() {
   }, [form])
 
   function openCreate() {
+    setFormMode('create')
+    setEditingId(null)
     setForm({
       clientId: '', number: suggestNumber(items), issueDate: todayStr(), dueDate: plusDays(14),
       items: [{ description: '', qty: '1', rate: '' }], taxRate: '0', discount: '0', notes: '',
     })
+    clearAll()
+    setFormOpen(true)
+  }
+
+  /** Pre-fill the shared form with an existing DRAFT invoice and switch to edit mode. */
+  function openEdit(inv: InvoiceItem) {
+    setFormMode('edit')
+    setEditingId(inv.id)
+    setForm({
+      clientId: inv.clientId,
+      number: inv.number,
+      issueDate: inv.issueDate.slice(0, 10),
+      dueDate: inv.dueDate.slice(0, 10),
+      items:
+        inv.items.length > 0
+          ? inv.items.map((l) => ({ description: l.description, qty: String(l.qty), rate: String(l.rate) }))
+          : [{ description: '', qty: '1', rate: '' }],
+      taxRate: String(inv.taxRate ?? 0),
+      discount: String(inv.discount ?? 0),
+      notes: inv.notes ?? '',
+    })
+    clearAll()
+    setDetail(null)
     setFormOpen(true)
   }
 
   function setLine(idx: number, patch: Partial<LineForm>) {
     setForm((f) => ({ ...f, items: f.items.map((l, i) => (i === idx ? { ...l, ...patch } : l)) }))
+    clearError('items')
   }
 
-  async function createInvoice() {
+  async function submitInvoice() {
+    // M14-fe: zod validation layer. The form filters empty line rows
+    // *before* validating so the schema sees only the items that will
+    // actually be submitted to the API — `items: min(1)` then surfaces
+    // "Add at least one line item" as an inline error under the items
+    // section instead of a generic toast.
     const lines = form.items.filter((l) => l.description.trim())
+    if (!validate(invoiceSchema, { ...form, items: lines })) {
+      toast({ title: 'Please fix the highlighted fields', variant: 'destructive' })
+      return
+    }
+    // Existing toast fallbacks (kept as a second line of defense).
     if (!form.clientId) {
       toast({ title: 'Client is required', description: 'Select the client being billed.', variant: 'destructive' })
       return
@@ -182,24 +257,31 @@ export default function FinanceInvoicesView() {
       toast({ title: 'Due date is required', variant: 'destructive' })
       return
     }
+    if (form.issueDate && form.dueDate < form.issueDate) {
+      toast({ title: 'Due date must be on or after the issue date', variant: 'destructive' })
+      return
+    }
     setSaving(true)
     try {
-      await api('/api/finance/invoices', {
-        method: 'POST',
-        body: {
-          clientId: form.clientId,
-          number: form.number,
-          issueDate: form.issueDate || undefined,
-          dueDate: form.dueDate,
-          items: lines.map((l) => ({ description: l.description, qty: Number(l.qty) || 0, rate: Number(l.rate) || 0 })),
-          taxRate: Number(form.taxRate) || 0,
-          discount: Number(form.discount) || 0,
-          notes: form.notes,
-        },
-      })
-      toast({ title: 'Invoice created', description: `${form.number} saved as draft.` })
+      const payload = {
+        clientId: form.clientId,
+        number: form.number,
+        issueDate: form.issueDate || undefined,
+        dueDate: form.dueDate,
+        items: lines.map((l) => ({ description: l.description, qty: Number(l.qty) || 0, rate: Number(l.rate) || 0 })),
+        taxRate: Number(form.taxRate) || 0,
+        discount: Number(form.discount) || 0,
+        notes: form.notes,
+      }
+      if (formMode === 'edit' && editingId) {
+        await api(`/api/finance/invoices/${editingId}`, { method: 'PATCH', body: payload })
+        toast({ title: 'Invoice updated', description: `${form.number} saved.` })
+      } else {
+        await api('/api/finance/invoices', { method: 'POST', body: payload })
+        toast({ title: 'Invoice created', description: `${form.number} saved as draft.` })
+      }
       setFormOpen(false)
-      refresh()
+      refreshAll()
     } catch {
     } finally {
       setSaving(false)
@@ -215,7 +297,7 @@ export default function FinanceInvoicesView() {
         description: `${inv.number} · ${money(inv.total, cur)}`,
       })
       setDetail(next === 'CANCELLED' ? null : { ...inv, status: next })
-      refresh()
+      refreshAll()
     } catch {
     } finally {
       setBusy(false)
@@ -234,10 +316,23 @@ export default function FinanceInvoicesView() {
         setDetail(null)
       } else {
         await api(`/api/finance/invoices/${inv.id}`, { method: 'DELETE' })
-        toast({ title: 'Invoice deleted', description: `${inv.number} was removed.` })
+        // M15-fe: undo toast
+        toast({
+          title: 'Invoice deleted',
+          description: `${inv.number} was removed.`,
+          duration: 5000,
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              api(`/api/finance/invoices/${inv.id}/restore`, { method: 'POST', silent: true })
+                .then(() => { toast({ title: 'Invoice restored' }); refreshAll() })
+                .catch(() => toast({ title: 'Could not restore', variant: 'destructive' }))
+            },
+          },
+        })
         setDetail(null)
       }
-      refresh()
+      refreshAll()
     } catch {
     } finally {
       setBusy(false)
@@ -287,7 +382,7 @@ export default function FinanceInvoicesView() {
       </Card>
 
       {/* table */}
-      {loading ? (
+      {loading && items.length === 0 ? (
         <Card className="py-0">
           <CardContent className="flex flex-col gap-3 p-4">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -300,7 +395,7 @@ export default function FinanceInvoicesView() {
             ))}
           </CardContent>
         </Card>
-      ) : error ? (
+      ) : error && items.length === 0 ? (
         <EmptyState icon={Receipt} title="Couldn't load invoices" description={error} />
       ) : filtered.length === 0 ? (
         <EmptyState
@@ -318,7 +413,7 @@ export default function FinanceInvoicesView() {
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow>
+                <TableRow className="sticky top-0 z-10 bg-background">
                   <TableHead className="min-w-40">Number</TableHead>
                   <TableHead className="min-w-36">Client</TableHead>
                   <TableHead className="min-w-32">Issued</TableHead>
@@ -355,8 +450,16 @@ export default function FinanceInvoicesView() {
               </TableBody>
             </Table>
           </div>
-          <div className="border-t px-4 py-2.5 text-xs text-muted-foreground">
-            Showing {filtered.length} of {items.length} invoices
+          <div className="flex flex-col gap-2 border-t px-4 py-2.5 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              Showing {filtered.length} of {items.length} loaded invoice{items.length === 1 ? '' : 's'}
+              {hasMore && ' · more available below'}
+            </span>
+            {(hasMore || loading) && (
+              <Button variant="outline" size="sm" className="h-9" onClick={loadMore} disabled={loading}>
+                {loading ? 'Loading…' : 'Load more'}
+              </Button>
+            )}
           </div>
         </Card>
       )}
@@ -426,9 +529,14 @@ export default function FinanceInvoicesView() {
               <DialogFooter className="flex-wrap gap-2 sm:justify-between">
                 <div className="flex flex-wrap items-center gap-2">
                   {canManage && detail.status === 'DRAFT' && (
-                    <Button size="sm" onClick={() => void setStatusOf(detail, 'SENT')} disabled={busy}>
-                      <Send className="size-4" aria-hidden /> Send
-                    </Button>
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => openEdit(detail)} disabled={busy}>
+                        <Pencil className="size-4" aria-hidden /> Edit
+                      </Button>
+                      <Button size="sm" onClick={() => void setStatusOf(detail, 'SENT')} disabled={busy}>
+                        <Send className="size-4" aria-hidden /> Send
+                      </Button>
+                    </>
                   )}
                   {canManage && ['SENT', 'VIEWED', 'PARTIALLY_PAID'].includes(detail.status) && (
                     <>
@@ -452,19 +560,30 @@ export default function FinanceInvoicesView() {
         </DialogContent>
       </Dialog>
 
-      {/* ---------- create dialog ---------- */}
+      {/* ---------- create / edit dialog ---------- */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>New invoice</DialogTitle>
-            <DialogDescription>Billing is created as a draft — send it when you're ready.</DialogDescription>
+            <DialogTitle>{formMode === 'edit' ? 'Edit invoice' : 'New invoice'}</DialogTitle>
+            <DialogDescription>
+              {formMode === 'edit'
+                ? 'Update the draft — totals recompute automatically. Status changes are saved separately.'
+                : 'Billing is created as a draft — send it when you\'re ready.'}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="inv-client">Client *</Label>
-                <Select value={form.clientId} onValueChange={(v) => setForm((f) => ({ ...f, clientId: v }))}>
-                  <SelectTrigger id="inv-client" className="w-full"><SelectValue placeholder="Select client" /></SelectTrigger>
+                <Select value={form.clientId} onValueChange={(v) => { setForm((f) => ({ ...f, clientId: v })); clearError('clientId') }}>
+                  <SelectTrigger
+                    id="inv-client"
+                    className="w-full"
+                    aria-invalid={!!errors.clientId}
+                    aria-describedby={errors.clientId ? 'inv-client-error' : undefined}
+                  >
+                    <SelectValue placeholder="Select client" />
+                  </SelectTrigger>
                   <SelectContent>
                     {(clientsQ.data?.items ?? []).map((c) => (
                       <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
@@ -472,13 +591,22 @@ export default function FinanceInvoicesView() {
                     {clientsQ.loading && <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading clients…</p>}
                   </SelectContent>
                 </Select>
+                {errors.clientId && <p id="inv-client-error" className="text-xs text-destructive" role="alert">{errors.clientId}</p>}
                 {clientsQ.data && clientsQ.data.items.length === 0 && (
                   <p className="text-xs text-amber-600 dark:text-amber-400">No clients yet — win a deal first.</p>
                 )}
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="inv-number">Invoice number *</Label>
-                <Input id="inv-number" value={form.number} onChange={(e) => setForm((f) => ({ ...f, number: e.target.value }))} className="font-mono" />
+                <Input
+                  id="inv-number"
+                  value={form.number}
+                  onChange={(e) => { setForm((f) => ({ ...f, number: e.target.value })); clearError('number') }}
+                  className="font-mono"
+                  aria-invalid={!!errors.number}
+                  aria-describedby={errors.number ? 'inv-number-error' : undefined}
+                />
+                {errors.number && <p id="inv-number-error" className="text-xs text-destructive" role="alert">{errors.number}</p>}
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -486,25 +614,41 @@ export default function FinanceInvoicesView() {
                 <Label htmlFor="inv-issue" className="flex items-center gap-1.5">
                   <CalendarDays className="size-3.5" aria-hidden /> Issue date
                 </Label>
-                <Input id="inv-issue" type="date" value={form.issueDate} onChange={(e) => setForm((f) => ({ ...f, issueDate: e.target.value }))} />
+                <Input
+                  id="inv-issue"
+                  type="date"
+                  value={form.issueDate}
+                  onChange={(e) => { setForm((f) => ({ ...f, issueDate: e.target.value })); clearError('issueDate') }}
+                  aria-invalid={!!errors.issueDate}
+                  aria-describedby={errors.issueDate ? 'inv-issue-error' : undefined}
+                />
+                {errors.issueDate && <p id="inv-issue-error" className="text-xs text-destructive" role="alert">{errors.issueDate}</p>}
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="inv-due" className="flex items-center gap-1.5">
                   <CalendarDays className="size-3.5" aria-hidden /> Due date *
                 </Label>
-                <Input id="inv-due" type="date" value={form.dueDate} onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))} />
+                <Input
+                  id="inv-due"
+                  type="date"
+                  value={form.dueDate}
+                  onChange={(e) => { setForm((f) => ({ ...f, dueDate: e.target.value })); clearError('dueDate') }}
+                  aria-invalid={!!errors.dueDate}
+                  aria-describedby={errors.dueDate ? 'inv-due-error' : undefined}
+                />
+                {errors.dueDate && <p id="inv-due-error" className="text-xs text-destructive" role="alert">{errors.dueDate}</p>}
               </div>
             </div>
 
             {/* line items */}
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <Label>Line items *</Label>
+                <Label aria-describedby={errors.items ? 'inv-items-error' : undefined}>Line items *</Label>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setForm((f) => ({ ...f, items: [...f.items, { description: '', qty: '1', rate: '' }] }))}
+                  onClick={() => { setForm((f) => ({ ...f, items: [...f.items, { description: '', qty: '1', rate: '' }] })); clearError('items') }}
                 >
                   <Plus className="size-4" aria-hidden /> Add item
                 </Button>
@@ -524,7 +668,7 @@ export default function FinanceInvoicesView() {
                         variant="ghost"
                         size="icon"
                         className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-                        onClick={() => setForm((f) => ({ ...f, items: f.items.filter((_, i) => i !== idx) }))}
+                        onClick={() => { setForm((f) => ({ ...f, items: f.items.filter((_, i) => i !== idx) })); clearError('items') }}
                         disabled={form.items.length === 1}
                         aria-label={`Remove line ${idx + 1}`}
                       >
@@ -551,22 +695,50 @@ export default function FinanceInvoicesView() {
                   </div>
                 ))}
               </div>
+              {errors.items && <p id="inv-items-error" className="text-xs text-destructive" role="alert">{errors.items}</p>}
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-2">
                 <Label htmlFor="inv-tax">Tax rate (%)</Label>
-                <Input id="inv-tax" type="number" min="0" value={form.taxRate} onChange={(e) => setForm((f) => ({ ...f, taxRate: e.target.value }))} />
+                <Input
+                  id="inv-tax"
+                  type="number"
+                  min="0"
+                  value={form.taxRate}
+                  onChange={(e) => { setForm((f) => ({ ...f, taxRate: e.target.value })); clearError('taxRate') }}
+                  aria-invalid={!!errors.taxRate}
+                  aria-describedby={errors.taxRate ? 'inv-tax-error' : undefined}
+                />
+                {errors.taxRate && <p id="inv-tax-error" className="text-xs text-destructive" role="alert">{errors.taxRate}</p>}
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="inv-discount">Discount ({currencySymbol(cur)})</Label>
-                <Input id="inv-discount" type="number" min="0" value={form.discount} onChange={(e) => setForm((f) => ({ ...f, discount: e.target.value }))} />
+                <Input
+                  id="inv-discount"
+                  type="number"
+                  min="0"
+                  value={form.discount}
+                  onChange={(e) => { setForm((f) => ({ ...f, discount: e.target.value })); clearError('discount') }}
+                  aria-invalid={!!errors.discount}
+                  aria-describedby={errors.discount ? 'inv-discount-error' : undefined}
+                />
+                {errors.discount && <p id="inv-discount-error" className="text-xs text-destructive" role="alert">{errors.discount}</p>}
               </div>
             </div>
 
             <div className="flex flex-col gap-2">
               <Label htmlFor="inv-notes">Notes</Label>
-              <Textarea id="inv-notes" rows={2} value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Payment terms, bank details…" />
+              <Textarea
+                id="inv-notes"
+                rows={2}
+                value={form.notes}
+                onChange={(e) => { setForm((f) => ({ ...f, notes: e.target.value })); clearError('notes') }}
+                placeholder="Payment terms, bank details…"
+                aria-invalid={!!errors.notes}
+                aria-describedby={errors.notes ? 'inv-notes-error' : undefined}
+              />
+              {errors.notes && <p id="inv-notes-error" className="text-xs text-destructive" role="alert">{errors.notes}</p>}
             </div>
 
             {/* live totals preview */}
@@ -583,7 +755,11 @@ export default function FinanceInvoicesView() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>
-            <Button onClick={() => void createInvoice()} disabled={saving}>{saving ? 'Creating…' : 'Create invoice'}</Button>
+            <Button onClick={() => void submitInvoice()} disabled={saving}>
+              {saving
+                ? formMode === 'edit' ? 'Saving…' : 'Creating…'
+                : formMode === 'edit' ? 'Save changes' : 'Create invoice'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

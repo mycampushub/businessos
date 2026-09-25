@@ -1,6 +1,7 @@
 import { db } from '@/lib/db'
 import { notifyUsers, logActivity, ApiError } from '@/lib/server/api'
 import { platformAudit } from '@/app/api/platform/guard'
+import { fromCents0 } from '@/lib/server/money'
 
 // ---------- SaaS platform billing (T6) ----------
 // Shared by /api/platform/plans*, /api/platform/subscriptions*,
@@ -93,8 +94,9 @@ export function planItem(p: PlanRow, subscriptionCount: number): PlanItem {
     code: p.code,
     name: p.name,
     description: p.description,
-    priceMonthly: p.priceMonthly,
-    priceYearly: p.priceYearly,
+    // C7: priceMonthly/priceYearly are now Int cents in the DB — convert to dollars for the API response
+    priceMonthly: fromCents0(p.priceMonthly),
+    priceYearly: fromCents0(p.priceYearly),
     currency: p.currency,
     seatLimit: p.seatLimit,
     projectLimit: p.projectLimit,
@@ -142,7 +144,8 @@ export function subItem(s: SubRow): SubItem {
     billingCycle: s.billingCycle,
     status: s.status,
     seats: s.seats,
-    amountMonthly: s.amountMonthly,
+    // C7: amountMonthly is now Int cents in the DB — convert to dollars for the API response
+    amountMonthly: fromCents0(s.amountMonthly),
     startedAt: s.startedAt.toISOString(),
     currentPeriodStart: s.currentPeriodStart.toISOString(),
     currentPeriodEnd: s.currentPeriodEnd.toISOString(),
@@ -176,13 +179,14 @@ export async function planSubscriptionCounts(): Promise<Map<string, number>> {
   return new Map(rows.map((r) => [r.planId, r._count._all]))
 }
 
-/** MRR = sum of normalized monthly amounts across ACTIVE/PAST_DUE subscriptions */
+/** MRR = sum of normalized monthly amounts across ACTIVE/PAST_DUE subscriptions.
+ *  C7: amountMonthly is now Int cents in the DB — return dollars for the API response. */
 export async function mrr(): Promise<number> {
   const rows = await db.subscription.findMany({
     where: { status: { in: ['ACTIVE', 'PAST_DUE'] } },
     select: { amountMonthly: true },
   })
-  return Math.round(rows.reduce((sum, r) => sum + r.amountMonthly, 0) * 100) / 100
+  return fromCents0(rows.reduce((sum, r) => sum + r.amountMonthly, 0))
 }
 
 // ---------- mutations (shared by routes) ----------
@@ -239,9 +243,9 @@ export async function assignSubscription(opts: {
     include: subInclude,
   })
 
-  // keep the denormalized display plan in sync
-  if (org.plan !== plan.name) {
-    await db.organization.update({ where: { id: org.id }, data: { plan: plan.name } })
+  // H13-db fix: keep the denormalized plan field in sync — store Plan.code (UPPERCASE) not Plan.name
+  if (org.plan !== plan.code) {
+    await db.organization.update({ where: { id: org.id }, data: { plan: plan.code } })
   }
 
   await notifyUsers({
@@ -260,7 +264,7 @@ export async function assignSubscription(opts: {
     entity: 'Subscription',
     entityId: created.id,
     oldValues: { plan: org.plan },
-    newValues: { plan: plan.name, billingCycle, seats, status },
+    newValues: { plan: plan.code, billingCycle, seats, status },
   })
   await logActivity({
     orgId: org.id,
@@ -332,7 +336,8 @@ export function billingRequestItem(r: {
     planName: r.plan.name,
     billingCycle: r.billingCycle,
     seats: r.seats,
-    amount: r.amount,
+    // C7: amount is now Int cents in the DB — convert to dollars for the API response
+    amount: fromCents0(r.amount),
     note: r.note,
     status: r.status,
     requestedById: r.requestedById,

@@ -7,6 +7,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NAV_LINKS, SITE } from '@/lib/site'
 
+// L32-ui: same EMAIL_RE as the contact form — client-side validation gate so
+// invalid addresses never round-trip to the server.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+
 function NewsletterForm() {
   const [email, setEmail] = useState('')
   const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
@@ -14,14 +18,21 @@ function NewsletterForm() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!email.trim() || state === 'loading') return
+    if (state === 'loading') return
+    // L32-ui: validate before submitting — show an inline error if invalid.
+    const trimmed = email.trim()
+    if (!EMAIL_RE.test(trimmed)) {
+      setState('error')
+      setError('Please enter a valid email address.')
+      return
+    }
     setState('loading')
     setError('')
     try {
       const res = await fetch('/api/contact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'NEWSLETTER', email }),
+        body: JSON.stringify({ type: 'NEWSLETTER', email: trimmed }),
       })
       const json = await res.json().catch(() => null)
       if (res.ok && json?.ok) {
@@ -46,31 +57,39 @@ function NewsletterForm() {
   }
 
   return (
-    <form onSubmit={submit} className="flex w-full max-w-sm items-center gap-2" noValidate>
-      <label htmlFor="newsletter-email" className="sr-only">
-        Email address
-      </label>
-      <Input
-        id="newsletter-email"
-        type="email"
-        required
-        value={email}
-        onChange={(e) => {
-          setEmail(e.target.value)
-          if (state === 'error') setState('idle')
-        }}
-        placeholder="you@company.com"
-        className="h-10 border-white/15 bg-white/5 text-white placeholder:text-zinc-500 focus-visible:ring-emerald-400/50"
-      />
-      <Button
-        type="submit"
-        variant="secondary"
-        className="h-10 shrink-0 bg-emerald-500 text-zinc-950 hover:bg-emerald-400"
-        disabled={state === 'loading'}
-      >
-        {state === 'loading' ? <Loader2 className="size-4 animate-spin" /> : 'Subscribe'}
-      </Button>
-      {state === 'error' && <p className="sr-only">{error}</p>}
+    <form onSubmit={submit} className="flex w-full max-w-sm flex-col gap-2" noValidate>
+      <div className="flex items-center gap-2">
+        <label htmlFor="newsletter-email" className="sr-only">
+          Email address
+        </label>
+        <Input
+          id="newsletter-email"
+          type="email"
+          required
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value)
+            if (state === 'error') setState('idle')
+          }}
+          aria-invalid={state === 'error' || undefined}
+          aria-describedby={state === 'error' ? 'newsletter-error' : undefined}
+          placeholder="you@company.com"
+          className="h-10 border-white/15 bg-white/5 text-white placeholder:text-zinc-500 focus-visible:ring-emerald-400/50"
+        />
+        <Button
+          type="submit"
+          variant="secondary"
+          className="h-10 shrink-0 bg-emerald-500 text-zinc-950 hover:bg-emerald-400"
+          disabled={state === 'loading'}
+        >
+          {state === 'loading' ? <Loader2 className="size-4 animate-spin" /> : 'Subscribe'}
+        </Button>
+      </div>
+      {state === 'error' && (
+        <p id="newsletter-error" role="alert" className="text-xs text-rose-300">
+          {error}
+        </p>
+      )}
     </form>
   )
 }

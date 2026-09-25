@@ -7,11 +7,12 @@
  * list (status sort follows column order), and a month calendar.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   addDays, addMonths, eachDayOfInterval, endOfMonth, endOfWeek, format, isSameDay, isSameMonth,
   startOfMonth, startOfWeek,
 } from 'date-fns'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { api, useData } from '@/lib/client/api'
 import { useWorkspace } from '@/lib/client/store'
 import { toast } from '@/hooks/use-toast'
@@ -137,6 +138,21 @@ export default function TasksView() {
     return () => clearTimeout(id)
   }, [q])
 
+  // H6-fe: paginated "Load more" pattern. The filter key lets us reset offset
+  // to 0 synchronously (during render) whenever the user changes a filter —
+  // otherwise useData would refetch with the new filter but the stale offset.
+  const PAGE_SIZE = 50
+  const filterKey = `${debouncedQ}|${projectId}|${assignee}|${status}`
+  const [pageState, setPageState] = useState<{ filterKey: string; offset: number }>({ filterKey: '', offset: 0 })
+  const [allItems, setAllItems] = useState<TaskItem[]>([])
+  const [hasMore, setHasMore] = useState(true)
+  if (pageState.filterKey !== filterKey) {
+    setPageState({ filterKey, offset: 0 })
+    setAllItems([])
+    setHasMore(true)
+  }
+  const offset = pageState.offset
+
   const path = useMemo(() => {
     const params = new URLSearchParams()
     if (debouncedQ) params.set('q', debouncedQ)
@@ -144,11 +160,47 @@ export default function TasksView() {
     if (assignee === 'me') params.set('assignee', 'me')
     else if (assignee !== 'all' && assignee !== 'none') params.set('assignee', assignee)
     if (status !== 'all') params.set('status', status)
-    params.set('limit', '2000')
+    params.set('limit', String(PAGE_SIZE))
+    params.set('offset', String(offset))
     return `/api/tasks?${params.toString()}`
-  }, [debouncedQ, projectId, assignee, status])
+  }, [debouncedQ, projectId, assignee, status, offset])
 
   const tasks = useData<{ items: TaskItem[] }>(path)
+
+  // Append (or replace on offset=0) whenever a fresh page arrives. Dedupe by
+  // id. We only depend on `tasks.data` (not `offset`) — depending on offset
+  // would cause the effect to fire with stale data when offset changes but
+  // the new fetch hasn't completed yet. The closure captures the latest
+  // offset from the render that produced this effect run.
+  //
+  // The setState-in-effect here is intentional and unavoidable: we need to
+  // accumulate items across multiple pages (the API only returns one page at
+  // a time), and there is no external system to subscribe to — the source of
+  // truth is the fetch result. The "cascading render" the lint rule warns
+  // about is one extra render per page load, which is acceptable.
+  useEffect(() => {
+    if (!tasks.data) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAllItems((prev) => {
+      if (offset === 0) return tasks.data!.items
+      const seen = new Set(prev.map((t) => t.id))
+      return [...prev, ...tasks.data!.items.filter((t) => !seen.has(t.id))]
+    })
+    setHasMore(tasks.data.items.length >= PAGE_SIZE)
+  }, [tasks.data])
+
+  function loadMore() {
+    setPageState((s) => (s.filterKey === filterKey ? { ...s, offset: s.offset + PAGE_SIZE } : s))
+  }
+
+  function refreshAll() {
+    if (offset === 0) {
+      tasks.refresh()
+    } else {
+      setPageState((s) => (s.filterKey === filterKey ? { ...s, offset: 0 } : s))
+    }
+  }
+
   const columnsQ = useData<{ items: ColumnItem[] }>('/api/columns?surface=TASK')
   const employees = useData<{ items: EmployeeItem[] }>('/api/hr/employees')
   const projects = useData<{ items: ProjectOption[] }>('/api/projects')
@@ -176,7 +228,6 @@ export default function TasksView() {
   const [dayDialogDate, setDayDialogDate] = useState<Date | null>(null)
   const [addColumnOpen, setAddColumnOpen] = useState(false)
 
-  const allItems = tasks.data?.items ?? []
   const colItems = columnsQ.data?.items ?? []
   // board columns — dynamic (fallback: derive from the loaded data if the list is unavailable)
   const columns: TaskColumnOption[] = useMemo(() => {
@@ -257,6 +308,14 @@ export default function TasksView() {
   }, [calTasks.data, calMilestones.data, calMeetings.data, calHolidays.data, calProjectId, month])
 
   const noDueCount = (calTasks.data?.items ?? []).filter((t) => !t.dueDate).length
+  // M17-fe: calendar skeleton-first rendering — true while ANY of the 4
+  // calendar endpoints is still on its first load. The grid renders
+  // immediately; events overlay as each fetch resolves.
+  const calLoading =
+    (calTasks.loading && !calTasks.data) ||
+    (calMeetings.loading && !calMeetings.data) ||
+    (calMilestones.loading && !calMilestones.data) ||
+    (calHolidays.loading && !calHolidays.data)
   const days = useMemo(() => eachDayOfInterval({
     start: startOfWeek(startOfMonth(month), { weekStartsOn: 1 }),
     end: endOfWeek(endOfMonth(month), { weekStartsOn: 1 }),
@@ -284,6 +343,22 @@ export default function TasksView() {
       return (av - bv) * dir
     })
   }, [items, sortKey, sortDir, statusOrder])
+
+  // M18-fe: virtualize the list table body. Only ~20-30 rows are rendered at
+  // a time regardless of how many tasks the user has loaded (Load more keeps
+  // appending to sortedItems — the virtualizer simply grows to fit them).
+  const listParentRef = useRef<HTMLDivElement>(null)
+  const rowVirtualizer = useVirtualizer({
+    count: sortedItems.length,
+    getScrollElement: () => listParentRef.current,
+    estimateSize: () => 45,
+    overscan: 10,
+  })
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const listPaddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
+  const listPaddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+    : 0
 
   function openDetail(task: TaskItem) {
     setDialogTask(task)
@@ -334,20 +409,18 @@ export default function TasksView() {
   }
 
   function applyUpdate(updated: TaskItem) {
-    tasks.setData((prev) => prev
-      ? { items: prev.items.map((t) => {
-          if (t.id === updated.id) return updated
-          if ((t.subtasks ?? []).some((s) => s.id === updated.id)) {
-            return { ...t, subtasks: (t.subtasks ?? []).map((s) => (s.id === updated.id ? { ...s, status: updated.status } : s)) }
-          }
-          return t
-        }) }
-      : prev)
+    setAllItems((prev) => prev.map((t) => {
+      if (t.id === updated.id) return updated
+      if ((t.subtasks ?? []).some((s) => s.id === updated.id)) {
+        return { ...t, subtasks: (t.subtasks ?? []).map((s) => (s.id === updated.id ? { ...s, status: updated.status } : s)) }
+      }
+      return t
+    }))
     setDialogTask((prev) => (prev && prev.id === updated.id ? updated : prev))
   }
 
   function handleDeleted(id: string) {
-    tasks.setData((prev) => (prev ? { items: prev.items.filter((t) => t.id !== id) } : prev))
+    setAllItems((prev) => prev.filter((t) => t.id !== id))
     setDialogTask((prev) => (prev && prev.id === id ? null : prev))
   }
 
@@ -357,7 +430,7 @@ export default function TasksView() {
       applyUpdate(updated)
       toast({ title: 'Task moved', description: `"${task.title}" → ${columns.find((c) => c.key === nextStatus)?.label ?? nextStatus}` })
     } catch {
-      tasks.refresh()
+      refreshAll()
     }
   }
 
@@ -406,7 +479,7 @@ export default function TasksView() {
       await api(`/api/columns/${col.id}`, { method: 'PATCH', body: { label } })
       toast({ title: 'Column renamed', description: `Now called “${label}”.` })
       columnsQ.refresh()
-      tasks.refresh()
+      refreshAll()
     },
     recolor: async (col: CrudColumn, color: string | null) => {
       await api(`/api/columns/${col.id}`, { method: 'PATCH', body: { color } })
@@ -416,19 +489,19 @@ export default function TasksView() {
     move: async (col: CrudColumn, direction: 'left' | 'right') => {
       await api(`/api/columns/${col.id}`, { method: 'PATCH', body: { direction } })
       columnsQ.refresh()
-      tasks.refresh()
+      refreshAll()
     },
     toggleDone: async (col: CrudColumn, next: boolean) => {
       await api(`/api/columns/${col.id}`, { method: 'PATCH', body: { isDone: next } })
       toast({ title: next ? 'Done column enabled' : 'Done column disabled', description: `“${col.title}” ${next ? 'now counts as completed' : 'no longer counts as completed'}.` })
       columnsQ.refresh()
-      tasks.refresh()
+      refreshAll()
     },
     delete: async (col: CrudColumn, moveToId: string) => {
       const res = await api<{ moved: number }>(`/api/columns/${col.id}?moveTo=${moveToId}`, { method: 'DELETE' })
       toast({ title: `Column deleted — ${res.moved} card${res.moved === 1 ? '' : 's'} moved` })
       columnsQ.refresh()
-      tasks.refresh()
+      refreshAll()
     },
   }
 
@@ -439,7 +512,7 @@ export default function TasksView() {
     })
     toast({ title: 'Column added', description: `“${draft.label}” is at the end of the board.` })
     columnsQ.refresh()
-    tasks.refresh()
+    refreshAll()
   }
 
   const crudCols = crudColumns()
@@ -605,90 +678,111 @@ export default function TasksView() {
           ) : items.length === 0 ? (
             <EmptyState icon={ListTodo} title="No tasks match your filters" description="Adjust the filters above." />
           ) : (
-            <div className="overflow-x-auto rounded-xl border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="min-w-56">Task</TableHead>
-                    <TableHead className="min-w-40">Assignee</TableHead>
-                    <TableHead className="min-w-28">
-                      <button type="button" onClick={() => toggleSort('status')}
-                        className="inline-flex items-center gap-1 hover:text-foreground" aria-label="Sort by status (column order)">
-                        Status <SortIcon className="size-3.5" aria-hidden />
-                      </button>
-                    </TableHead>
-                    <TableHead className="min-w-24">
-                      <button type="button" onClick={() => toggleSort('priority')}
-                        className="inline-flex items-center gap-1 hover:text-foreground" aria-label="Sort by priority">
-                        Priority <SortIcon className="size-3.5" aria-hidden />
-                      </button>
-                    </TableHead>
-                    <TableHead className="min-w-28">
-                      <button type="button" onClick={() => toggleSort('due')}
-                        className="inline-flex items-center gap-1 hover:text-foreground" aria-label="Sort by due date">
-                        Due <SortIcon className="size-3.5" aria-hidden />
-                      </button>
-                    </TableHead>
-                    <TableHead className="min-w-20 text-right">Est (h)</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {sortedItems.map((t) => {
-                    const due = dueLabel(t.dueDate)
-                    const dimmed = doneKeys.has(t.status)
-                    return (
-                      <TableRow
-                        key={t.id}
-                        className="cursor-pointer focus-visible:bg-muted/60 focus-visible:outline-none"
-                        aria-label={`Open task ${t.title}`}
-                        {...rowClick(() => openDetail(t))}
-                      >
-                        <TableCell className="max-w-72">
-                          <div className="flex items-center gap-2">
-                            <span className="shrink-0"><PriorityDot priority={t.priority} /></span>
-                            <span className="min-w-0">
-                              <span className={'block truncate font-medium' + (dimmed ? ' text-muted-foreground line-through' : '')}>{t.title}</span>
-                              {t.project && (
-                                <span className="mt-0.5 inline-flex max-w-full items-center gap-1 text-[11px] text-muted-foreground">
-                                  <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: t.project.color ?? '#10b981' }} aria-hidden />
-                                  <span className="truncate">{t.project.name}</span>
+            // M18-fe: virtualized table. The scroll container is the outer div
+            // (max-h-[70vh] overflow-auto); the Table's wrapper is overridden
+            // to overflow-visible so the outer div is the nearest scroll
+            // ancestor for the sticky header. Spacer rows pad the body to the
+            // virtualizer's total size; only the visible window of rows is
+            // actually rendered.
+            <div className="rounded-xl border bg-card">
+              <div ref={listParentRef} className="max-h-[70vh] overflow-auto">
+                <Table containerClassName="overflow-x-visible">
+                  <TableHeader>
+                    <TableRow className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_rgb(0_0_0_/_0.06)]">
+                      <TableHead className="min-w-56">Task</TableHead>
+                      <TableHead className="min-w-40">Assignee</TableHead>
+                      <TableHead className="min-w-28">
+                        <button type="button" onClick={() => toggleSort('status')}
+                          className="inline-flex items-center gap-1 hover:text-foreground" aria-label="Sort by status (column order)">
+                          Status <SortIcon className="size-3.5" aria-hidden />
+                        </button>
+                      </TableHead>
+                      <TableHead className="min-w-24">
+                        <button type="button" onClick={() => toggleSort('priority')}
+                          className="inline-flex items-center gap-1 hover:text-foreground" aria-label="Sort by priority">
+                          Priority <SortIcon className="size-3.5" aria-hidden />
+                        </button>
+                      </TableHead>
+                      <TableHead className="min-w-28">
+                        <button type="button" onClick={() => toggleSort('due')}
+                          className="inline-flex items-center gap-1 hover:text-foreground" aria-label="Sort by due date">
+                          Due <SortIcon className="size-3.5" aria-hidden />
+                        </button>
+                      </TableHead>
+                      <TableHead className="min-w-20 text-right">Est (h)</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                      {listPaddingTop > 0 && (
+                        <tr aria-hidden>
+                          <td colSpan={6} style={{ height: listPaddingTop, padding: 0, border: 'none' }} />
+                        </tr>
+                      )}
+                      {virtualRows.map((vRow) => {
+                        const t = sortedItems[vRow.index]
+                        const due = dueLabel(t.dueDate)
+                        const dimmed = doneKeys.has(t.status)
+                        return (
+                          <TableRow
+                            key={t.id}
+                            data-index={vRow.index}
+                            ref={rowVirtualizer.measureElement}
+                            className="cursor-pointer focus-visible:bg-muted/60 focus-visible:outline-none"
+                            aria-label={`Open task ${t.title}`}
+                            {...rowClick(() => openDetail(t))}
+                          >
+                            <TableCell className="max-w-72">
+                              <div className="flex items-center gap-2">
+                                <span className="shrink-0"><PriorityDot priority={t.priority} /></span>
+                                <span className="min-w-0">
+                                  <span className={'block truncate font-medium' + (dimmed ? ' text-muted-foreground line-through' : '')}>{t.title}</span>
+                                  {t.project && (
+                                    <span className="mt-0.5 inline-flex max-w-full items-center gap-1 text-[11px] text-muted-foreground">
+                                      <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: t.project.color ?? '#10b981' }} aria-hidden />
+                                      <span className="truncate">{t.project.name}</span>
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              {t.assigneeName ? (
+                                <span className="flex items-center gap-2">
+                                  <UserAvatar name={t.assigneeName} avatarUrl={t.assignee?.user.avatarUrl} size="xs" />
+                                  <span className="truncate text-sm">{t.assigneeName}</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  <UserRound className="size-3.5" aria-hidden /> Unassigned
                                 </span>
                               )}
-                            </span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {t.assigneeName ? (
-                            <span className="flex items-center gap-2">
-                              <UserAvatar name={t.assigneeName} avatarUrl={t.assignee?.user.avatarUrl} size="xs" />
-                              <span className="truncate text-sm">{t.assigneeName}</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                              <UserRound className="size-3.5" aria-hidden /> Unassigned
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell><StatusBadge label={taskStatusLabel(t.status, columns)} tone={taskStatusTone(t.status, columns)} /></TableCell>
-                        <TableCell>
-                          <span className="inline-flex items-center gap-2 text-sm">
-                            <span className={'size-2 rounded-full ' + (PRIORITY_CELL[t.priority] ?? 'bg-muted-foreground/40')} aria-hidden />
-                            {PRIORITY_LABELS[t.priority] ?? t.priority}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span className={'text-sm' + (due.overdue && !dimmed ? ' font-medium text-rose-600 dark:text-rose-400' : dimmed ? ' text-muted-foreground' : '')}>
-                            {t.dueDate ? due.text : '—'}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right text-sm text-muted-foreground">
-                          {t.estimatedHours ?? '—'}
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })}
-                </TableBody>
-              </Table>
+                            </TableCell>
+                            <TableCell><StatusBadge label={taskStatusLabel(t.status, columns)} tone={taskStatusTone(t.status, columns)} /></TableCell>
+                            <TableCell>
+                              <span className="inline-flex items-center gap-2 text-sm">
+                                <span className={'size-2 rounded-full ' + (PRIORITY_CELL[t.priority] ?? 'bg-muted-foreground/40')} aria-hidden />
+                                {PRIORITY_LABELS[t.priority] ?? t.priority}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <span className={'text-sm' + (due.overdue && !dimmed ? ' font-medium text-rose-600 dark:text-rose-400' : dimmed ? ' text-muted-foreground' : '')}>
+                                {t.dueDate ? due.text : '—'}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right text-sm text-muted-foreground">
+                              {t.estimatedHours ?? '—'}
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                      {listPaddingBottom > 0 && (
+                        <tr aria-hidden>
+                          <td colSpan={6} style={{ height: listPaddingBottom, padding: 0, border: 'none' }} />
+                        </tr>
+                      )}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           )}
         </TabsContent>
@@ -731,81 +825,104 @@ export default function TasksView() {
             </div>
           </div>
 
-          {calTasks.loading && !calTasks.data ? (
-            <Skeleton className="h-96 w-full rounded-xl" />
-          ) : (
-            <div className="overflow-x-auto rounded-xl border bg-card">
-              <div className="min-w-[750px]">
-                <div className="grid grid-cols-7 border-b">
-                  {WEEKDAYS.map((d) => (
-                    <div key={d} className="px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{d}</div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-7">
-                  {days.map((day) => {
-                    const dayEvents = calEvents.get(format(day, 'yyyy-MM-dd')) ?? []
-                    const inMonth = isSameMonth(day, month)
-                    const isToday = isSameDay(day, today)
-                    return (
-                      <div key={day.toISOString()}
-                        className={'flex min-h-24 flex-col gap-1 border-b border-r p-1.5 last:border-r-0 sm:min-h-28 md:min-h-32 '
-                          + (inMonth ? 'bg-card' : 'bg-muted/40 text-muted-foreground')
-                          + (isToday ? ' ring-1 ring-inset ring-emerald-600/40' : '')}>
-                        <button type="button" onClick={() => dayEvents.length > 0 && setDayDialogDate(day)}
-                          className={'flex min-h-6 items-center justify-center self-start rounded-md px-1.5 text-xs '
-                            + (isToday ? 'bg-emerald-600 font-semibold text-white' : 'text-muted-foreground')}>
-                          {format(day, 'd')}
-                        </button>
-                        <div className="flex flex-col gap-0.5">
-                          {dayEvents.slice(0, 3).map((ev) => {
-                            const dimmed = ev.kind === 'task' && ev.task ? doneKeys.has(ev.task.status) : false
-                            return (
-                              <button
-                                key={ev.key}
-                                type="button"
-                                onClick={() => openEvent(ev)}
-                                className={`flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors ${
-                                  ev.kind === 'holiday' ? HOLIDAY_CHIP_CLASS : 'bg-muted/60 hover:bg-accent'
-                                }`}
-                                aria-label={eventAria(ev)}
-                              >
-                                {ev.kind === 'task' && (
-                                  <span className={'size-1.5 shrink-0 rounded-full ' + (ev.task ? (PRIORITY_CELL[ev.task.priority] ?? 'bg-muted-foreground/40') : '')} aria-hidden />
-                                )}
-                                {ev.kind === 'milestone' && (
-                                  <span className="size-2 shrink-0 rotate-45 rounded-[2px] bg-amber-500" aria-hidden />
-                                )}
-                                {ev.kind === 'meeting' && (
-                                  <Video className="size-3 shrink-0 text-teal-600 dark:text-teal-400" aria-hidden />
-                                )}
-                                {ev.kind === 'holiday' && (
-                                  <CalendarDays className="size-3 shrink-0" aria-hidden />
-                                )}
-                                <span className={'truncate text-[11px] leading-tight' + (dimmed ? ' text-muted-foreground line-through' : '')}>
-                                  {eventTitle(ev)}
-                                </span>
-                              </button>
-                            )
-                          })}
-                          {dayEvents.length > 3 && (
-                            <button type="button" onClick={() => setDayDialogDate(day)}
-                              className="rounded-md px-1 py-0.5 text-left text-[10px] font-medium text-muted-foreground hover:bg-muted">
-                              +{dayEvents.length - 3} more
+          {/* M17-fe: skeleton-first rendering. The 7-column day grid (with day
+              numbers + clickable cells) is rendered immediately — the data
+              fetches are overlaid on top as each one resolves. While any of
+              the 4 calendar endpoints is still in flight, empty day cells show
+              a subtle shimmer so the user sees the grid is "filling in". */}
+          <div className="overflow-x-auto rounded-xl border bg-card" aria-busy={calLoading}>
+            <div className="min-w-[750px]">
+              <div className="grid grid-cols-7 border-b">
+                {WEEKDAYS.map((d) => (
+                  <div key={d} className="px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{d}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7">
+                {days.map((day) => {
+                  const dayEvents = calEvents.get(format(day, 'yyyy-MM-dd')) ?? []
+                  const inMonth = isSameMonth(day, month)
+                  const isToday = isSameDay(day, today)
+                  // shimmer only on cells that haven't received their events yet
+                  const showShimmer = calLoading && dayEvents.length === 0
+                  return (
+                    <div key={day.toISOString()}
+                      className={'flex min-h-24 flex-col gap-1 border-b border-r p-1.5 last:border-r-0 sm:min-h-28 md:min-h-32 '
+                        + (inMonth ? 'bg-card' : 'bg-muted/40 text-muted-foreground')
+                        + (isToday ? ' ring-1 ring-inset ring-emerald-600/40' : '')}>
+                      <button type="button" onClick={() => dayEvents.length > 0 && setDayDialogDate(day)}
+                        className={'flex min-h-6 items-center justify-center self-start rounded-md px-1.5 text-xs '
+                          + (isToday ? 'bg-emerald-600 font-semibold text-white' : 'text-muted-foreground')}>
+                        {format(day, 'd')}
+                      </button>
+                      <div className="flex flex-col gap-0.5">
+                        {showShimmer && (
+                          <div className="flex flex-col gap-0.5" aria-hidden>
+                            <span className="h-3.5 w-full animate-pulse rounded-md bg-muted/70" />
+                            <span className="h-3.5 w-2/3 animate-pulse rounded-md bg-muted/60" />
+                          </div>
+                        )}
+                        {dayEvents.slice(0, 3).map((ev) => {
+                          const dimmed = ev.kind === 'task' && ev.task ? doneKeys.has(ev.task.status) : false
+                          return (
+                            <button
+                              key={ev.key}
+                              type="button"
+                              onClick={() => openEvent(ev)}
+                              className={`flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors ${
+                                ev.kind === 'holiday' ? HOLIDAY_CHIP_CLASS : 'bg-muted/60 hover:bg-accent'
+                              }`}
+                              aria-label={eventAria(ev)}
+                            >
+                              {ev.kind === 'task' && (
+                                <span className={'size-1.5 shrink-0 rounded-full ' + (ev.task ? (PRIORITY_CELL[ev.task.priority] ?? 'bg-muted-foreground/40') : '')} aria-hidden />
+                              )}
+                              {ev.kind === 'milestone' && (
+                                <span className="size-2 shrink-0 rotate-45 rounded-[2px] bg-amber-500" aria-hidden />
+                              )}
+                              {ev.kind === 'meeting' && (
+                                <Video className="size-3 shrink-0 text-teal-600 dark:text-teal-400" aria-hidden />
+                              )}
+                              {ev.kind === 'holiday' && (
+                                <CalendarDays className="size-3 shrink-0" aria-hidden />
+                              )}
+                              <span className={'truncate text-[11px] leading-tight' + (dimmed ? ' text-muted-foreground line-through' : '')}>
+                                {eventTitle(ev)}
+                              </span>
                             </button>
-                          )}
-                        </div>
+                          )
+                        })}
+                        {dayEvents.length > 3 && (
+                          <button type="button" onClick={() => setDayDialogDate(day)}
+                            className="rounded-md px-1 py-0.5 text-left text-[10px] font-medium text-muted-foreground hover:bg-muted">
+                            +{dayEvents.length - 3} more
+                          </button>
+                        )}
                       </div>
-                    )
-                  })}
-                </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
-          )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Tasks on their due date · milestones as <span className="inline-block size-2 rotate-45 rounded-[2px] bg-amber-500 align-middle" aria-hidden /> · meetings with a <Video className="inline size-3 text-teal-600 dark:text-teal-400" aria-hidden /> icon · public &amp; company holidays as amber chips. Click an item to open it.
           </p>
         </TabsContent>
       </Tabs>
+
+      {/* H6-fe: Load more — visible from both the Board and List tabs (the
+          calendar tab owns its own unfiltered fetch). Hidden once the last
+          page returned fewer than PAGE_SIZE items. */}
+      {tab !== 'calendar' && allItems.length > 0 && (hasMore || tasks.loading) && (
+        <div className="flex flex-col items-center gap-1.5">
+          <Button variant="outline" className="h-11" onClick={loadMore} disabled={tasks.loading}>
+            {tasks.loading ? 'Loading…' : 'Load more'}
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Showing {allItems.length} task{allItems.length === 1 ? '' : 's'}.
+          </p>
+        </div>
+      )}
 
       {/* day dialog — everything scheduled on that day */}
       <Dialog open={dayDialogDate !== null} onOpenChange={(o) => !o && setDayDialogDate(null)}>

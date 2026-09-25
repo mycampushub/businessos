@@ -1,5 +1,6 @@
 import { db } from '@/lib/db'
 import type { Deal } from '@prisma/client'
+import { fromCents, fromCents0 } from '@/lib/server/money'
 
 /** Shared includes + mapping for deal responses (not a route file — plain module). */
 export const dealInclude = {
@@ -14,7 +15,8 @@ export type DealRow = Deal & {
   contact: { id: string; name: string } | null
 }
 
-export const money = (n: number) => `৳${Math.round(n).toLocaleString('en-US')}`
+/** C7: Deal.value is now Int cents in the DB — accept cents, format as ৳dollars for log/notification messages. */
+export const money = (n: number) => `৳${Math.round(fromCents0(n)).toLocaleString('en-US')}`
 export const clampProb = (n: number) => Math.max(0, Math.min(100, Math.round(n)))
 
 /**
@@ -36,6 +38,8 @@ export async function decorateDeals(orgId: string, deals: DealRow[]) {
   const clientNames = new Map(clients.map((c) => [c.id, c.name]))
   return deals.map((d) => ({
     ...d,
+    // C7: value is now Int cents in the DB — convert to dollars for the API response
+    value: fromCents(d.value),
     stageName: d.stage?.name ?? null,
     companyName: d.company?.name ?? null,
     contactName: d.contact?.name ?? null,

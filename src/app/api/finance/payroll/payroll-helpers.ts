@@ -13,11 +13,14 @@ import { db } from '@/lib/db'
 import { getOrgPolicy, parseWorkDays } from '@/lib/server/policy'
 import { storedDateKey } from '@/lib/server/tz'
 import { holidayDateKeys, chargeableDaysBetweenKeys } from '@/lib/server/holidays'
+import { fromCents, fromCents0 } from '@/lib/server/money'
 
 // ---------- money ----------
 
 export const round2 = (n: number): number => Math.round(n * 100) / 100
-export const money = (n: number): string => `৳${Math.round(n).toLocaleString('en-US')}`
+// C7 fix: `money` receives a cents value (from DB / PayslipComputed) and must
+// convert to dollars before formatting for log messages.
+export const money = (n: number): string => `৳${Math.round(fromCents0(n)).toLocaleString('en-US')}`
 
 // ---------- payslip breakdown (JSON-as-String) ----------
 
@@ -95,8 +98,9 @@ export function runItem(run: RunItemSource) {
     createdByName: run.createdBy?.user?.name ?? null,
     approvedByName: run.approvedBy?.user?.name ?? null,
     payslipCount: run.payslips.length,
-    totalGross: round2(run.payslips.reduce((s, p) => s + p.gross, 0)),
-    totalNet: round2(run.payslips.reduce((s, p) => s + p.net, 0)),
+    // C7 fix: payslips.gross/net are stored in cents → convert to dollars.
+    totalGross: fromCents0(run.payslips.reduce((s, p) => s + p.gross, 0)),
+    totalNet: fromCents0(run.payslips.reduce((s, p) => s + p.net, 0)),
   }
 }
 
@@ -133,17 +137,19 @@ export function payslipItem(p: PayslipSource) {
     title: p.membership?.title ?? null,
     departmentName: p.membership?.department?.name ?? null,
     role: p.membership?.role ?? null,
-    baseSalary: round2(p.baseSalary),
-    allowances: round2(p.allowances),
-    deductions: round2(p.deductions),
+    // C7 fix: all payslip money columns are stored in cents → convert to dollars.
+    baseSalary: fromCents0(p.baseSalary),
+    allowances: fromCents0(p.allowances),
+    deductions: fromCents0(p.deductions),
     unpaidLeaveDays: p.unpaidLeaveDays,
-    unpaidLeaveAmount: round2(p.unpaidLeaveAmount),
-    gross: round2(p.gross),
-    net: round2(p.net),
+    unpaidLeaveAmount: fromCents0(p.unpaidLeaveAmount),
+    gross: fromCents0(p.gross),
+    net: fromCents0(p.net),
     presentDays: p.presentDays,
     absentDays: p.absentDays,
     lateDays: p.lateDays,
-    breakdown: parseBreakdown(p.breakdown),
+    // breakdown JSON amounts are stored in cents → convert each row to dollars.
+    breakdown: parseBreakdown(p.breakdown).map((r) => ({ ...r, amount: fromCents0(r.amount) })),
   }
 }
 
@@ -247,11 +253,15 @@ export function computePayslip(
   // penalty occurrence: HALF_DAY deducts half a day's salary (base/30 ÷ 2), AMOUNT
   // deducts the configured figure. Lates on HOLIDAY/LEAVE days are never counted
   // (status LATE only exists on days with real check-ins).
+  // C7 fix: base + lp.amount are now cents (Int). The HALF_DAY per-occurrence amount
+  // must be an integer cent value (Math.round) so latePenaltyAmount/net stay integer
+  // cents — the old `* 100 / 100` dollar-rounding produced fractional cents that broke
+  // Int storage. AMOUNT mode reads lp.amount straight from the (Int) policy column.
   const lp = latePenalty ?? { enabled: false, threshold: 3, mode: 'HALF_DAY', amount: 0 }
   const latePenaltyOccurrences = lp.enabled ? Math.floor(lateDays / Math.max(1, lp.threshold)) : 0
   const perOccurrence =
-    lp.mode === 'AMOUNT' ? lp.amount : Math.round(((base / 30) / 2) * 100) / 100
-  const latePenaltyAmount = latePenaltyOccurrences > 0 ? round2(latePenaltyOccurrences * perOccurrence) : 0
+    lp.mode === 'AMOUNT' ? lp.amount : Math.round((base / 30) / 2)
+  const latePenaltyAmount = latePenaltyOccurrences > 0 ? latePenaltyOccurrences * perOccurrence : 0
 
   const gross = round2(base + allowances)
   const net = Math.max(0, round2(gross - fixedDeductions - unpaidLeaveAmount - latePenaltyAmount))
@@ -305,13 +315,13 @@ export async function buildPayslipRows(orgId: string, period: string): Promise<P
   ])
   const workDays = parseWorkDays(policy.workDays)
   const holidayKeys = holidayDateKeys(orgHolidays)
-  // Attendance rows of the period — fetched org-wide and filtered in JS (SQLite-safe prefix compare)
-  const periodAttendance = (
-    await db.attendance.findMany({
-      where: { orgId },
-      select: { membershipId: true, date: true, status: true },
-    })
-  ).filter((a) => a.date.startsWith(period))
+  // H6 fix: scope the attendance fetch by period prefix (date is 'YYYY-MM-DD', period is 'YYYY-MM').
+  // Previously fetched ALL attendance ever for the org then filtered in JS — O(n) memory for years
+  // of data on every payroll run. Now uses a sargable startsWith query.
+  const periodAttendance = await db.attendance.findMany({
+    where: { orgId, date: { startsWith: period } },
+    select: { membershipId: true, date: true, status: true },
+  })
   const approvedLeaves = await db.leaveRequest.findMany({
     where: { orgId, status: 'APPROVED' },
     include: { leaveType: { select: { paid: true } } },
@@ -341,12 +351,14 @@ export interface SalaryMember {
 }
 
 export function salaryItem(m: SalaryMember) {
-  const allowancesTotal = round2(
-    m.salaryComponents.filter((c) => c.kind === 'ALLOWANCE').reduce((s, c) => s + c.amount, 0),
-  )
-  const deductionsTotal = round2(
-    m.salaryComponents.filter((c) => c.kind === 'DEDUCTION').reduce((s, c) => s + c.amount, 0),
-  )
+  // C7 fix: baseSalary + component amounts are stored in cents. Sum in cents,
+  // then convert every output value to dollars via fromCents/fromCents0.
+  const allowancesCents = m.salaryComponents
+    .filter((c) => c.kind === 'ALLOWANCE')
+    .reduce((s, c) => s + c.amount, 0)
+  const deductionsCents = m.salaryComponents
+    .filter((c) => c.kind === 'DEDUCTION')
+    .reduce((s, c) => s + c.amount, 0)
   return {
     membershipId: m.id,
     name: m.user.name,
@@ -355,10 +367,10 @@ export function salaryItem(m: SalaryMember) {
     departmentName: m.department?.name ?? null,
     role: m.role,
     employmentType: m.employmentType,
-    baseSalary: m.baseSalary === null ? null : round2(m.baseSalary),
-    components: m.salaryComponents.map((c) => ({ id: c.id, label: c.label, kind: c.kind, amount: round2(c.amount) })),
-    allowancesTotal,
-    deductionsTotal,
-    monthlyCost: round2((m.baseSalary ?? 0) + allowancesTotal),
+    baseSalary: fromCents(m.baseSalary),
+    components: m.salaryComponents.map((c) => ({ id: c.id, label: c.label, kind: c.kind, amount: fromCents0(c.amount) })),
+    allowancesTotal: fromCents0(allowancesCents),
+    deductionsTotal: fromCents0(deductionsCents),
+    monthlyCost: fromCents0((m.baseSalary ?? 0) + allowancesCents),
   }
 }

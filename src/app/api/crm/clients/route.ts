@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth, requireOrg } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { fromCents0 } from '@/lib/server/money'
 
 /**
  * GET /api/crm/clients — org clients with aggregated engagement metrics.
@@ -43,7 +44,7 @@ export const GET = withAuth(async (req: NextRequest, ctx) => {
       healthNote: c.healthNote,
       since: c.since,
       projectCount: c._count.projects,
-      revenue: Math.round((revenueByClient.get(c.id) ?? 0) * 100) / 100,
+      revenue: fromCents0(revenueByClient.get(c.id) ?? 0),
     })),
   })
 })

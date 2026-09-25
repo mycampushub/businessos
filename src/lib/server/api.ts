@@ -88,6 +88,11 @@ export function withAuth(
           where: { userId: session.user.id, orgId: session.activeOrgId },
           select: { id: true, userId: true, role: true, title: true, departmentId: true, orgId: true, status: true },
         })
+        // C3 fix: suspended/terminated/resigned memberships lose API access immediately.
+        // (ALUMNI is already filtered in getSessionUser; this catches the other inactive statuses.)
+        if (membership && !['ACTIVE', 'ON_LEAVE', 'PROBATION'].includes(membership.status)) {
+          return fail('Your membership in this organization is no longer active. Contact your administrator.', 403)
+        }
         if (membership) {
           org = await db.organization.findUnique({
             where: { id: session.activeOrgId },
@@ -95,8 +100,37 @@ export function withAuth(
           })
         }
       }
+
+      // C16 fix: enforce email verification (platform admins bypass — they manage the platform)
+      const isAuthRoute = req.nextUrl.pathname.startsWith('/api/auth')
+      if (!session.user.emailVerified && !session.user.platformAdmin && !isAuthRoute) {
+        return fail('Please verify your email address to continue.', 403)
+      }
+      // ---- CSRF defense-in-depth (M12-auth) ----
+      // SameSite=Lax + JSON content-type already stops the classic cross-site form
+      // POST, but a single regression (e.g. a route that accepts form-urlencoded, or
+      // a future same-site=none cookie) would re-open the hole. The "double-submit"
+      // pattern below blocks every cross-site request because a cross-origin form
+      // cannot set a custom header without a CORS preflight — which we don't grant.
+      // Only enforced on MUTATING methods; GETs are read-only and side-effect-free.
+      // Unauthenticated routes (/api/auth/login, /register, /forgot-password, …)
+      // never enter withAuth, so the check effectively only applies to authenticated
+      // mutating requests — exactly the surface that needs CSRF protection.
+      if (MUTATING.has(req.method)) {
+        if (!req.headers.get('x-requested-with')) {
+          return fail('Missing required header', 403)
+        }
+      }
       // ---- subscription write-gate (EXPIRED orgs are read-only) ----
-      if (org && MUTATING.has(req.method) && !SUB_EXEMPT.some((pfx) => req.nextUrl.pathname.startsWith(pfx))) {
+      // M25 fix: exact segment match — `pathname === pfx || pathname.startsWith(pfx + '/')`.
+      // The previous `pathname.startsWith(pfx)` would exempt `/api/authX`, `/api/billingX`,
+      // `/api/platformX` and `/api/cronX` too, letting any future route under those prefixes
+      // bypass the EXPIRED-org write-gate.
+      if (
+        org &&
+        MUTATING.has(req.method) &&
+        !SUB_EXEMPT.some((pfx) => req.nextUrl.pathname === pfx || req.nextUrl.pathname.startsWith(pfx + '/'))
+      ) {
         const subStatus = await orgSubscriptionStatus(org.id)
         if (subStatus === 'EXPIRED') {
           return fail('Your subscription has expired. Data is read-only — renew from Billing & Plan to continue.', 402)
@@ -221,12 +255,17 @@ export async function notifyUsers(opts: {
 }) {
   const ids = [...new Set(opts.userIds.filter(Boolean))]
   if (!ids.length) return
+  // H19 fix: validate notification type against the allowed set
+  const NOTIFICATION_TYPES = ['TASK', 'PROJECT', 'LEAVE', 'FINANCE', 'CRM', 'HR', 'SYSTEM'] as const
+  const type = NOTIFICATION_TYPES.includes(opts.type as (typeof NOTIFICATION_TYPES)[number])
+    ? opts.type!
+    : 'SYSTEM'
   await db.notification
     .createMany({
       data: ids.map((userId) => ({
         orgId: opts.orgId,
         userId,
-        type: opts.type ?? 'SYSTEM',
+        type,
         title: opts.title,
         body: opts.body ?? null,
         module: opts.module ?? null,
@@ -243,6 +282,8 @@ export async function audit(opts: {
   entityId?: string
   oldValues?: unknown
   newValues?: unknown
+  /** H6-auth fix: platform admin userId when this action is performed during a support/impersonation session */
+  impersonatedBy?: string | null
 }) {
   await db.auditLog
     .create({
@@ -254,6 +295,7 @@ export async function audit(opts: {
         entityId: opts.entityId ?? null,
         oldValues: opts.oldValues ? JSON.stringify(opts.oldValues) : null,
         newValues: opts.newValues ? JSON.stringify(opts.newValues) : null,
+        impersonatedBy: opts.impersonatedBy ?? null,
       },
     })
     .catch((e) => console.error('[audit]', e))

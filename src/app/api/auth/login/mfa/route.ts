@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { ok, fail, body, str } from '@/lib/server/api'
 import { verifyPassword, createSession, setSessionCookie, getSessionUser } from '@/lib/server/auth'
 import { verifyTotp } from '@/lib/server/totp'
+import { decryptSecret } from '@/lib/server/crypto'
 import {
   checkRate,
   resetRate,
@@ -14,7 +15,8 @@ import {
 
 /** POST /api/auth/login/mfa — complete an MFA login.
  *  Stateless by design: the client resends email+password alongside the TOTP code
- *  (no intermediate session or challenge token exists). Same rate bucket as /login. */
+ *  (no intermediate session or challenge token exists). Same rate bucket as /login.
+ *  M14-auth fix: the stored TOTP secret is decrypted before verification. */
 export async function POST(req: NextRequest) {
   try {
     const data = await body<Record<string, unknown>>(req)
@@ -42,7 +44,16 @@ export async function POST(req: NextRequest) {
     if (!user.mfaEnabled || !user.mfaSecret) {
       return fail('Multi-factor authentication is not enabled for this account', 400)
     }
-    if (!verifyTotp(user.mfaSecret, code, { window: 1 })) {
+    // M14-auth: decrypt the stored ciphertext before verifying the TOTP code.
+    // A decrypt failure (corrupted row / key rotation in progress) is treated as
+    // "Invalid verification code" — same surface as the verify/disable routes.
+    let plaintextSecret: string
+    try {
+      plaintextSecret = decryptSecret(user.mfaSecret)
+    } catch {
+      return fail('Invalid verification code', 401)
+    }
+    if (!verifyTotp(plaintextSecret, code, { window: 1 })) {
       return fail('Invalid verification code', 401)
     }
 
@@ -50,6 +61,9 @@ export async function POST(req: NextRequest) {
 
     const token = await createSession(user.id)
     await setSessionCookie(token)
+    // M11-auth fix: kill every OTHER session for this user on a fresh MFA login
+    // (same "log out other devices" semantics as the regular login route).
+    await db.session.deleteMany({ where: { userId: user.id, NOT: { id: token } } }).catch(() => {})
 
     // Resolve AFTER the session cookie is set so the fresh session is visible.
     return ok(await getSessionUser())

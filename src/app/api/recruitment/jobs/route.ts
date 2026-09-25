@@ -14,6 +14,7 @@ import {
   logActivity,
 } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { toCents, fromCents } from '@/lib/server/money'
 
 const EXPERIENCE_LEVELS = ['ENTRY', 'MID', 'SENIOR', 'LEAD'] as const
 const EMPLOYMENT_TYPES = ['FULL_TIME', 'PART_TIME', 'CONTRACT', 'FREELANCE', 'INTERN', 'TEMPORARY', 'VOLUNTEER'] as const
@@ -51,6 +52,9 @@ function mapJob(j: JobRow, hiringManagerName: string | null, applicationCount: n
   const { department, ...rest } = j
   return {
     ...rest,
+    // C7: salaryMin/salaryMax are now Int cents in the DB — convert to dollars for the API response
+    salaryMin: fromCents(j.salaryMin),
+    salaryMax: fromCents(j.salaryMax),
     departmentName: department?.name ?? null,
     hiringManagerName,
     applicationCount,
@@ -155,8 +159,9 @@ export async function POST(req: NextRequest) {
           b.workMode !== undefined && b.workMode !== null && b.workMode !== ''
             ? oneOf(b.workMode, WORK_MODES)
             : 'ONSITE',
-        salaryMin: optNum(b.salaryMin) ?? undefined,
-        salaryMax: optNum(b.salaryMax) ?? undefined,
+        // C7: client sends dollars, DB stores cents
+        salaryMin: toCents(optNum(b.salaryMin)),
+        salaryMax: toCents(optNum(b.salaryMax)),
         currency: opt(b.currency, 8) ?? org.currency,
         deadline: optDate(b.deadline) ?? undefined,
         openings: b.openings === undefined || b.openings === null || b.openings === '' ? 1 : Math.max(1, Math.round(Number(b.openings)) || 1),

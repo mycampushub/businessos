@@ -55,6 +55,25 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     if (denied) return denied
     const existing = await db.company.findFirst({ where: { id, orgId: org.id } })
     if (!existing) return fail('Company not found', 404)
+
+    // M21 fix: refuse to delete a company that still has contacts, deals or clients
+    // attached. The schema uses onDelete: SetNull so those rows would survive with
+    // companyId = null — silently orphaning them. Force the user to reassign or
+    // delete them first so the action is intentional and auditable.
+    const counts = await db.company.findUnique({
+      where: { id },
+      select: { _count: { select: { contacts: true, deals: true, clients: true } } },
+    })
+    if (
+      counts &&
+      (counts._count.contacts > 0 || counts._count.deals > 0 || counts._count.clients > 0)
+    ) {
+      return fail(
+        'Cannot delete a company with attached contacts, deals, or clients. Reassign or delete them first.',
+        400,
+      )
+    }
+
     await db.company.delete({ where: { id } })
     await logActivity({
       orgId: org.id,

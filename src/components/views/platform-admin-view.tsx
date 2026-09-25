@@ -758,12 +758,13 @@ function OrgsTab() {
                       <Badge
                         variant="outline"
                         className={
-                          org.plan === 'Free'
+                          // H13-db fix: org.plan is now UPPERCASE code (FREE, STARTER, etc.)
+                          org.plan === 'FREE'
                             ? 'bg-muted text-muted-foreground'
                             : 'border-teal-600/25 bg-teal-600/12 font-medium text-teal-700 dark:border-teal-500/30 dark:bg-teal-500/15 dark:text-teal-400'
                         }
                       >
-                        {org.plan}
+                        {org.plan.charAt(0) + org.plan.slice(1).toLowerCase()}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right text-sm tabular-nums">{org.memberCount}</TableCell>

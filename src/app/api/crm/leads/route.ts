@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import type { Lead } from '@prisma/client'
 import { ok, withAuth, requireOrg, body, str, optNum, oneOf, logActivity } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
+import { toCents, fromCents } from '@/lib/server/money'
 
 const LEAD_SOURCES = ['WEBSITE', 'REFERRAL', 'SOCIAL', 'AD', 'OUTREACH', 'EVENT', 'IMPORT', 'MANUAL'] as const
 
@@ -15,6 +16,8 @@ async function decorateLeads(orgId: string, leads: Lead[]) {
   const nameById = new Map(owners.map((o) => [o.id, o.user.name]))
   return leads.map((l) => ({
     ...l,
+    // C7: Lead.value is now Int cents in the DB — convert to dollars for the API response
+    value: fromCents(l.value),
     ownerName: l.ownerMembershipId ? nameById.get(l.ownerMembershipId) ?? null : null,
   }))
 }
@@ -40,7 +43,8 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
       email: str(b.email, 'email', { required: false, max: 200 }) || null,
       phone: str(b.phone, 'phone', { required: false, max: 50 }) || null,
       source: oneOf(b.source, LEAD_SOURCES, 'MANUAL'),
-      value: optNum(b.value) ?? null,
+      // C7: client sends dollars, DB stores cents
+      value: toCents(optNum(b.value)),
       notes: str(b.notes, 'notes', { required: false }) || null,
       ownerMembershipId: membership.id,
     },

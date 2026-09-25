@@ -38,7 +38,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     if (!firstMembership) return fail('This account has no organization workspace yet', 422)
 
-    const token = await createSession(user.id, ctx.user.id)
+    // H7-auth fix: support sessions get a 2-hour TTL (not the default 30 days) to limit
+    // "god mode" exposure if the admin forgets to sign out.
+    const SUPPORT_SESSION_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
+    const token = await createSession(user.id, ctx.user.id, SUPPORT_SESSION_TTL_MS)
     await setSessionCookie(token)
 
     await platformAudit({

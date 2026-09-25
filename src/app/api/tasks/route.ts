@@ -263,6 +263,7 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
   if (windowError) return fail(windowError, 422)
 
   const estimatedHours = optNum(data.estimatedHours)
+  if (estimatedHours !== undefined && estimatedHours < 0) return fail('Estimated hours cannot be negative', 422)
   const tags = data.tags ? str(data.tags, 'tags', { required: false, max: 500 }) : null
   const order = optNum(data.order)
 

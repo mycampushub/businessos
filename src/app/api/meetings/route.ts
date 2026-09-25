@@ -103,7 +103,10 @@ export const POST = withAuth(async (req: NextRequest, ctx) => {
       durationMins,
       agenda,
       createdByMembershipId: membership.id,
-      participants: participantRows.length ? participantRows.map((p) => p.id).join(',') : null,
+      // H12-db fix: participants are stored in the MeetingParticipant join table
+      meetingParticipants: participantRows.length
+        ? { create: participantRows.map((p) => ({ membershipId: p.id })) }
+        : undefined,
     },
     include: meetingInclude,
   })

@@ -3,6 +3,8 @@ import { db } from '@/lib/db'
 import { ok, withAuth, requireOrg } from '@/lib/server/api'
 import { requireAccess } from '@/lib/server/access'
 import { getTaskColumns, doneKeys } from '@/lib/server/columns'
+import { localDateKey, zonedStartUtc } from '@/lib/server/tz'
+import { fromCents0 } from '@/lib/server/money'
 
 const round = (n: number) => Math.round(n * 100) / 100
 
@@ -16,8 +18,9 @@ export async function GET(req: NextRequest) {
     if (denied) return denied
 
     const now = new Date()
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    // C6 fix: use org timezone for "today" instead of server-local time.
+    const today = localDateKey(now, org.timezone)
+    const startOfToday = zonedStartUtc(today, org.timezone)
 
     // dynamic TASK board columns: order drives taskStatus, isDone columns count as done
     const taskColumns = await getTaskColumns(orgId)
@@ -57,25 +60,32 @@ export async function GET(req: NextRequest) {
         select: { date: true, amount: true },
       }),
     ])
-    const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    // C6 fix: month keys derived from org-local date, not server-local Date getters.
+    const monthKeyFromInstant = (d: Date) => localDateKey(d, org.timezone).slice(0, 7) // 'YYYY-MM'
+    // C7 fix: inv.total + exp.amount are cents, so the by-month sums are cents.
     const revByMonth = new Map<string, number>()
     for (const inv of trendInvoices) {
-      const k = monthKey(inv.issueDate)
+      const k = monthKeyFromInstant(inv.issueDate)
       revByMonth.set(k, (revByMonth.get(k) ?? 0) + inv.total)
     }
     const expByMonth = new Map<string, number>()
     for (const exp of trendExpenses) {
-      const k = monthKey(exp.date)
+      const k = monthKeyFromInstant(exp.date)
       expByMonth.set(k, (expByMonth.get(k) ?? 0) + exp.amount)
     }
     const revenueTrend: Array<{ month: string; revenue: number; expenses: number }> = []
     for (let i = 5; i >= 0; i--) {
-      const m = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      const k = monthKey(m)
+      // Compute the year-month key i months before "today" in org timezone
+      const todayKey = localDateKey(now, org.timezone) // 'YYYY-MM-DD'
+      const [ty, tm] = todayKey.split('-').map(Number)
+      const targetDate = new Date(Date.UTC(ty, tm - 1 - i, 1))
+      const k = `${targetDate.getUTCFullYear()}-${String(targetDate.getUTCMonth() + 1).padStart(2, '0')}`
+      const labelDate = new Date(Date.UTC(ty, tm - 1 - i, 1))
+      // C7 fix: convert cent sums → dollars, then round for display.
       revenueTrend.push({
-        month: m.toLocaleDateString('en-GB', { month: 'short' }),
-        revenue: round(revByMonth.get(k) ?? 0),
-        expenses: round(expByMonth.get(k) ?? 0),
+        month: labelDate.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' }),
+        revenue: round(fromCents0(revByMonth.get(k) ?? 0)),
+        expenses: round(fromCents0(expByMonth.get(k) ?? 0)),
       })
     }
 
@@ -88,13 +98,15 @@ export async function GET(req: NextRequest) {
     for (const d of openDeals) {
       const cur = stageAgg.get(d.stageId) ?? { count: 0, value: 0 }
       cur.count += 1
+      // C7 fix: d.value is cents.
       cur.value += d.value
       stageAgg.set(d.stageId, cur)
     }
     const pipeline = stages.map((s) => ({
       stage: s.name,
       count: stageAgg.get(s.id)?.count ?? 0,
-      value: round(stageAgg.get(s.id)?.value ?? 0),
+      // C7 fix: convert cent sum → dollars, then round for display.
+      value: round(fromCents0(stageAgg.get(s.id)?.value ?? 0)),
     }))
 
     // ---------- task status distribution (all TASK columns incl. zero) ----------
@@ -197,7 +209,8 @@ export async function GET(req: NextRequest) {
     const clients = clientRows
       .map((c) => ({
         name: c.name,
-        revenue: round(c.invoices.reduce((s, i) => s + i.total, 0)),
+        // C7 fix: c.invoices[].total is cents → sum is cents → convert to dollars, then round.
+        revenue: round(fromCents0(c.invoices.reduce((s, i) => s + i.total, 0))),
         projectCount: c._count.projects,
       }))
       .sort((a, b) => b.revenue - a.revenue)
@@ -205,9 +218,11 @@ export async function GET(req: NextRequest) {
 
     return ok({
       kpis: {
-        revenue: round(invoiceAgg._sum.total ?? 0),
-        expenses: round(expenseAgg._sum.amount ?? 0),
-        openDealsValue: round(dealAgg._sum.value ?? 0),
+        // C7 fix: _sum.total / _sum.amount / _sum.value are cent aggregates → convert
+        // to dollars, then round for display.
+        revenue: round(fromCents0(invoiceAgg._sum.total ?? 0)),
+        expenses: round(fromCents0(expenseAgg._sum.amount ?? 0)),
+        openDealsValue: round(fromCents0(dealAgg._sum.value ?? 0)),
         openDealsCount: dealAgg._count,
         activeProjects,
         overdueTasks,

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, withAuth } from '@/lib/server/api'
-import { requirePlatform, PLANS } from '../guard'
+import { requirePlatform, PLANS, PLAN_LABELS } from '../guard'
 import { mrr } from '@/lib/server/billing'
 
 // Local YYYY-MM-DD helper (the sandbox runs in one timezone; matches the attendance convention)
@@ -81,7 +81,8 @@ export const GET = withAuth(async (_req: NextRequest, ctx) => {
   ])
 
   const planCount = new Map(planGroups.map((g) => [g.plan, g._count._all]))
-  const plans = PLANS.map((plan) => ({ plan, count: planCount.get(plan) ?? 0 }))
+  // MA-1 #6 fix: PLANS are now UPPERCASE codes; display label as Title Case for the UI
+  const plans = PLANS.map((plan) => ({ plan: PLAN_LABELS[plan] ?? plan, code: plan, count: planCount.get(plan) ?? 0 }))
 
   // signup trend — last 14 days INCLUDING zero-count days, ascending local dates
   const now = new Date()

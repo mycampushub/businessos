@@ -1,8 +1,9 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { ok, fail, withAuth, body, str } from '@/lib/server/api'
 import { requirePlatform, platformAudit } from '../guard'
 import { notifyUsers } from '@/lib/server/api'
+import { checkRate } from '@/lib/server/rate-limit'
 
 // POST /api/platform/broadcast — platform-wide operational announcement.
 // Creates a pinned Announcement in every ACTIVE org (author = null → "OrgOS Platform")
@@ -11,6 +12,17 @@ import { notifyUsers } from '@/lib/server/api'
 export const POST = withAuth(async (req: NextRequest, ctx) => {
   const denied = requirePlatform(ctx)
   if (denied) return denied
+
+  // M24 fix: rate-limit broadcasts to 1 per 10 minutes per platform admin. A single
+  // broadcast fans out to N orgs × M members (notifications) + N announcements — an
+  // accidental double-click or a runaway script would create thousands of rows.
+  const rl = checkRate(`broadcast:${ctx.user.id}`, 1, 10 * 60_000)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: 'Too many broadcasts. Please wait before sending another.' },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } },
+    )
+  }
 
   const b = await body<Record<string, unknown>>(req)
   const title = str(b.title, 'title', { max: 160 }).trim()
