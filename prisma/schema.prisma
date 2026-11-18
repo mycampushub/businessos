@@ -584,6 +584,7 @@ model Lead {
   convertedCompany   Company?     @relation("LeadConvertedCompany", fields: [convertedCompanyId], references: [id], onDelete: SetNull)
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
+  deletedAt          DateTime? // M15-fe soft-delete — null means active, non-null means deleted (for undo/restore)
 
   @@index([orgId])
   @@index([orgId, status])

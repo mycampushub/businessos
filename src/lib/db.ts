@@ -8,7 +8,7 @@ const globalForPrisma = globalThis as unknown as {
 // Models with `deletedAt` are automatically filtered to exclude soft-deleted rows
 // on all read queries (findMany, findFirst, findUnique, count, aggregate, groupBy).
 // Routes that need to see deleted rows can explicitly pass `deletedAt` in the where clause.
-const SOFT_DELETE_MODELS = ['task', 'invoice', 'expense', 'payrollRun', 'payslip', 'membership', 'document'] as const
+const SOFT_DELETE_MODELS = ['task', 'invoice', 'expense', 'payrollRun', 'payslip', 'membership', 'document', 'lead'] as const
 
 function addDeletedAtFilter(args: { where?: Record<string, unknown> }): { where: Record<string, unknown> } {
   const where = args.where ?? {}

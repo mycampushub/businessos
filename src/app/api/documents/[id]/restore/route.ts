@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { ok, fail, withAuth, requireOrg, requireAccess, logActivity } from '@/lib/server/api'
+import { ok, fail, withAuth, requireOrg, logActivity } from '@/lib/server/api'
+import { requireAccess } from '@/lib/server/access'
 
 // POST /api/documents/[id]/restore — undo a soft-delete (M15-fe)
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
