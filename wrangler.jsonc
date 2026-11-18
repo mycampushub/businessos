@@ -51,7 +51,7 @@
     {
       "binding": "DATABASE",
       "database_name": "orgos",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "database_id": "4a7a1812-314b-4ec9-ac05-793ccaa61cee",
       "migrations_dir": "cloudflare/migrations",
       "migrations_table": "__cf_d1_migrations"
     }
@@ -70,11 +70,11 @@
   "kv_namespaces": [
     {
       "binding": "SESSIONS",
-      "id": "REPLACE_WITH_SESSIONS_KV_NAMESPACE_ID"
+      "id": "7c18fe61fa1a4d7c871fe9b510cf60d8"
     },
     {
       "binding": "CACHE",
-      "id": "REPLACE_WITH_CACHE_KV_NAMESPACE_ID"
+      "id": "d51a90715c194032858b35ea780f4bd6"
     }
   ],
 
